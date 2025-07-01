@@ -26,8 +26,11 @@ int main(int argc, char** argv) {
     if (cmdl[{"--double"}]) {
         util::Logger::println("Using double precision");
         run_workflow<double>(n);
-    } else {
+    } else if (cmdl[{"--float"}]) {
         util::Logger::println("Using single precision");
+        run_workflow<float>(n);
+    } else {
+        util::Logger::println("Using default precision");
         run_workflow<float>(n);
     }
 
