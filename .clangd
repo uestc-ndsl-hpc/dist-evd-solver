@@ -1,0 +1,7 @@
+CompileFlags:
+    Remove:
+        - '-forward-unknown-to-host-compiler'
+        - '--generate-code*'
+        - '-arch=native'
+    Add:
+        -  '--no-cuda-version-check'
