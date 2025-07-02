@@ -132,12 +132,16 @@ template thrust::device_vector<double> create_uniform_random<double>(size_t,
                                                                      size_t);
 template thrust::device_vector<float> create_normal_random<float>(size_t, float,
                                                                   float);
-template thrust::device_vector<double> create_normal_random<double>(
-    size_t, double, double);
-template thrust::device_vector<float> create_normal_random<float>(size_t, size_t,
-                                                                  float, float);
-template thrust::device_vector<double> create_normal_random<double>(
-    size_t, size_t, double, double);
+template thrust::device_vector<double> create_normal_random<double>(size_t,
+                                                                    double,
+                                                                    double);
+template thrust::device_vector<float> create_normal_random<float>(size_t,
+                                                                  size_t, float,
+                                                                  float);
+template thrust::device_vector<double> create_normal_random<double>(size_t,
+                                                                    size_t,
+                                                                    double,
+                                                                    double);
 template thrust::device_vector<float> create_symmetric_random<float>(size_t);
 template thrust::device_vector<double> create_symmetric_random<double>(size_t);
 

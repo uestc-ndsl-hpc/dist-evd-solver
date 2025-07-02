@@ -1,4 +1,5 @@
 #include <fmt/format.h>
+
 #include <cstddef>
 
 #include "argh.h"
@@ -24,7 +25,7 @@ template <typename T>
 void run_workflow_tsqr(size_t m, size_t n) {
     auto C = matrix_ops::create_normal_random<T>(m, n);
     if (util::Logger::is_verbose()) {
-        matrix_ops::print(C, m, n, "Final Normal Random Matrix C");
+        matrix_ops::print(C, m, n, "Normal Random Matrix C");
     }
 }
 
@@ -37,7 +38,7 @@ int main(int argc, char** argv) {
     util::Logger::init_timer(print_time);
     util::Logger::println("Starting dist-evd-solver");
 
-    auto n = (size_t) 4;
+    auto n = (size_t)4;
     cmdl({"-n", "--size"}, 4) >> n;
     auto m = n;
     cmdl({"-m", "--m"}, n) >> m;

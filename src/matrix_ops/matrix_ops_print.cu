@@ -1,10 +1,11 @@
-#include "matrix_ops.cuh"
-
 #include <fmt/format.h>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
+
 #include <string>
 #include <type_traits>
+
+#include "matrix_ops.cuh"
 
 namespace matrix_ops {
 
@@ -34,12 +35,12 @@ void print(const thrust::device_vector<T>& d_vec, size_t n,
 
 // Explicitly instantiate the templates to allow for separate compilation
 template void print<float>(const thrust::device_vector<float>&, size_t, size_t,
-                         const std::string&);
-template void print<double>(const thrust::device_vector<double>&, size_t, size_t,
-                          const std::string&);
-template void print<float>(const thrust::device_vector<float>&, size_t,
-                         const std::string&);
+                           const std::string&);
 template void print<double>(const thrust::device_vector<double>&, size_t,
-                          const std::string&);
+                            size_t, const std::string&);
+template void print<float>(const thrust::device_vector<float>&, size_t,
+                           const std::string&);
+template void print<double>(const thrust::device_vector<double>&, size_t,
+                            const std::string&);
 
 }  // namespace matrix_ops
