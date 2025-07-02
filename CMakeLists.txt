@@ -12,7 +12,14 @@ find_package(NVHPC REQUIRED COMPONENTS MATH CUDA)
 add_subdirectory(fmt)
 add_subdirectory(argh)
 
-add_executable(dist-evd-solver src/main.cu)
+add_executable(dist-evd-solver
+        src/main.cu
+        src/matrix_ops/matrix_ops_print.cu
+        src/matrix_ops/matrix_ops_gen.cu)
+
+target_include_directories(dist-evd-solver
+        PRIVATE
+        src/include)
 
 target_link_libraries(dist-evd-solver
         PRIVATE
