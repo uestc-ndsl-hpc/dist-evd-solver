@@ -12,6 +12,8 @@ class Logger {
    public:
     static void init(bool verbose) { get()._verbose = verbose; }
 
+    static void init_timer(bool print_time) { get()._print_time = print_time; }
+
     static bool is_verbose() { return get()._verbose; }
 
     template <typename S, typename... Args>
@@ -27,13 +29,18 @@ class Logger {
     }
     
     static void tic(const std::string& name) {
+        auto it = get()._timers.find(name);
+        if (it != get()._timers.end()) {
+            cudaEventDestroy(it->second);
+            get()._timers.erase(it);
+        }
         cudaEvent_t start;
         cudaEventCreate(&start);
         cudaEventRecord(start, 0);
         get()._timers[name] = start;
     }
 
-    static void toc(const std::string& name, const bool print_time = true) {
+    static void toc(const std::string& name) {
         auto it = get()._timers.find(name);
         if (it == get()._timers.end()) {
             error("Timer '{}' not found for toc.", name);
@@ -49,19 +56,22 @@ class Logger {
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
         
-        if (print_time) {
+        if (get()._print_time) {
             fmt::println("[TIMER] {}: {:.4f} ms", name, milliseconds);
         } else {
             println("[TIMER] {}: {:.4f} ms", name, milliseconds);
         }
 
-        cudaEventDestroy(start);
         cudaEventDestroy(stop);
-        get()._timers.erase(it);
     }
 
    private:
     Logger() = default;
+    ~Logger() {
+        for (auto const& [name, event] : _timers) {
+            cudaEventDestroy(event);
+        }
+    }
 
     static Logger& get() {
         static Logger instance;
@@ -70,6 +80,7 @@ class Logger {
 
     bool _verbose = false;
     std::map<std::string, cudaEvent_t> _timers;
+    bool _print_time = false;
 };
 
 }  // namespace util

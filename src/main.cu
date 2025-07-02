@@ -7,9 +7,14 @@
 
 template <typename T>
 void run_workflow(int n) {
-    util::Logger::tic("create_symmetric_random");
+    if constexpr (std::is_same_v<T, float>) {
+        util::Logger::println("Using float precision");
+    } else {
+        util::Logger::println("Using double precision");
+    }
+
     auto C = matrix_ops::create_symmetric_random<T>(n);
-    util::Logger::toc("create_symmetric_random", true);
+
     if (util::Logger::is_verbose()) {
         matrix_ops::print(C, n, "Final Symmetric Matrix C");
     }
@@ -20,6 +25,8 @@ int main(int argc, char** argv) {
 
     const bool verbose = cmdl[{"-v", "--verbose"}];
     util::Logger::init(verbose);
+    const bool print_time = cmdl[{"-t", "--time"}];
+    util::Logger::init_timer(print_time);
     util::Logger::println("Starting dist-evd-solver");
 
     auto n = (size_t) 4;
