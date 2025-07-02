@@ -1,4 +1,5 @@
 #include <fmt/format.h>
+#include <cstddef>
 
 #include "argh.h"
 #include "log.h"
@@ -21,7 +22,7 @@ int main(int argc, char** argv) {
     util::Logger::init(verbose);
     util::Logger::println("Starting dist-evd-solver");
 
-    auto n = 4;
+    auto n = (size_t) 4;
     cmdl({"-n", "--size"}, 4) >> n;
 
     if (cmdl[{"--double"}]) {

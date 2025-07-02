@@ -10,6 +10,7 @@
 #include <time.h>
 #include <curand.h>
 
+#include <cstddef>
 #include <string>
 #include <type_traits>
 
@@ -23,12 +24,12 @@ namespace detail {
 template <typename T>
 struct symmetrize_functor {
     T* C;
-    const int n;
-    symmetrize_functor(T* C, int n) : C(C), n(n) {}
+    const size_t n;
+    symmetrize_functor(T* C, size_t n) : C(C), n(n) {}
 
-    __device__ void operator()(const int i) const {
-        int row = i / n;
-        int col = i % n;
+    __device__ void operator()(const size_t i) const {
+        size_t row = i / n;
+        size_t col = i % n;
         if (col >= row) {
             T val_ij = C[row * n + col];
             T val_ji = C[col * n + row];
@@ -41,12 +42,12 @@ struct symmetrize_functor {
 }  // namespace detail
 
 template <typename T>
-void print(const thrust::device_vector<T>& d_vec, int n,
+void print(const thrust::device_vector<T>& d_vec, size_t n,
            const std::string& title) {
     fmt::println("\n--- {} ({}x{}) ---", title, n, n);
     thrust::host_vector<T> h_vec = d_vec;
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
             if constexpr (std::is_floating_point_v<T>) {
                 fmt::print("{:8.4f} ", h_vec[i * n + j]);
             } else {
@@ -59,7 +60,7 @@ void print(const thrust::device_vector<T>& d_vec, int n,
 }
 
 template <typename T>
-thrust::device_vector<T> create_symmetric_random(int n) {
+thrust::device_vector<T> create_symmetric_random(size_t n) {
     util::Logger::println("Creating test device C of size {}x{}", n, n);
     auto C = thrust::device_vector<T>(n * n);
     auto C_ptr = thrust::raw_pointer_cast(C.data());
@@ -71,9 +72,9 @@ thrust::device_vector<T> create_symmetric_random(int n) {
     curandSetPseudoRandomGeneratorSeed(gen, time(nullptr));
 
     if constexpr (std::is_same_v<T, float>) {
-        curandGenerateUniform(gen, C_ptr, static_cast<size_t>(n) * n);
+        curandGenerateUniform(gen, C_ptr, n * n);
     } else if constexpr (std::is_same_v<T, double>) {
-        curandGenerateUniformDouble(gen, C_ptr, static_cast<size_t>(n) * n);
+        curandGenerateUniformDouble(gen, C_ptr, n * n);
     } else {
         fmt::report_error("Unsupported type");
     }
@@ -86,8 +87,8 @@ thrust::device_vector<T> create_symmetric_random(int n) {
     }
 
     util::Logger::println("Step 2: Symmetrizing C via (C + C^T) / 2");
-    thrust::for_each(thrust::counting_iterator<int>(0),
-                     thrust::counting_iterator<int>(n * n),
+    thrust::for_each(thrust::counting_iterator<size_t>(0),
+                     thrust::counting_iterator<size_t>(n * n),
                      detail::symmetrize_functor<T>(C_ptr, n));
     cudaDeviceSynchronize();
 
