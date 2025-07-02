@@ -1,10 +1,11 @@
 #pragma once
 
+#include <cuda_runtime.h>
 #include <fmt/core.h>
 #include <fmt/format.h>
-#include <string>
+
 #include <map>
-#include <cuda_runtime.h>
+#include <string>
 
 namespace util {
 
@@ -25,9 +26,10 @@ class Logger {
 
     template <typename... Args>
     static void error(const std::string& format_str, Args&&... args) {
-        fmt::print(stderr, ("[ERROR] " + format_str + "\n").c_str(), std::forward<Args>(args)...);
+        fmt::print(stderr, ("[ERROR] " + format_str + "\n").c_str(),
+                   std::forward<Args>(args)...);
     }
-    
+
     static void tic(const std::string& name) {
         auto it = get()._timers.find(name);
         if (it != get()._timers.end()) {
@@ -55,7 +57,7 @@ class Logger {
 
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
-        
+
         if (get()._print_time) {
             fmt::println("[TIMER] {}: {:.4f} ms", name, milliseconds);
         } else {

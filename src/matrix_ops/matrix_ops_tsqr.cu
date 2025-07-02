@@ -8,7 +8,7 @@
 #include "matrix_ops.cuh"
 
 namespace matrix_ops {
-    
+
 namespace internal {
 
 // 使用constexpr替代宏定义，更符合C++风格
