@@ -14,6 +14,10 @@ add_subdirectory(argh)
 
 add_executable(dist-evd-solver src/main.cu)
 
+target_include_directories(dist-evd-solver
+        PRIVATE
+        src/include)
+
 target_link_libraries(dist-evd-solver
         PRIVATE
         NVHPC::CUDART

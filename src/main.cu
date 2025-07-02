@@ -6,7 +6,9 @@
 
 template <typename T>
 void run_workflow(int n) {
+    util::Logger::tic("create_symmetric_random");
     auto C = matrix_ops::create_symmetric_random<T>(n);
+    util::Logger::toc("create_symmetric_random", true);
     if (util::Logger::is_verbose()) {
         matrix_ops::print(C, n, "Final Symmetric Matrix C");
     }
@@ -17,7 +19,6 @@ int main(int argc, char** argv) {
 
     const bool verbose = cmdl[{"-v", "--verbose"}];
     util::Logger::init(verbose);
-
     util::Logger::println("Starting dist-evd-solver");
 
     auto n = 4;

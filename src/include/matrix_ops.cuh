@@ -8,32 +8,17 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
 #include <time.h>
+#include <curand.h>
 
 #include <string>
 #include <type_traits>
 
+#include "fmt/base.h"
 #include "log.h"
 
 namespace matrix_ops {
 
 namespace detail {
-
-template <typename T>
-struct random_fill_functor {
-    const unsigned long long seed;
-    random_fill_functor(unsigned long long seed) : seed(seed) {}
-
-    __device__ T operator()(const int i) const {
-        curandState_t state;
-        curand_init(seed, i, 0, &state);
-        if constexpr (std::is_same_v<T, float>) {
-            return curand_uniform(&state);
-        } else if constexpr (std::is_same_v<T, double>) {
-            return curand_uniform_double(&state);
-        }
-        return T(0);
-    }
-};
 
 template <typename T>
 struct symmetrize_functor {
@@ -78,12 +63,22 @@ thrust::device_vector<T> create_symmetric_random(int n) {
     util::Logger::println("Creating test device C of size {}x{}", n, n);
     auto C = thrust::device_vector<T>(n * n);
     auto C_ptr = thrust::raw_pointer_cast(C.data());
-    auto seed = time(nullptr);
+    
+    util::Logger::println("Step 1: Filling C with random values using cuRAND library");
+    
+    curandGenerator_t gen;
+    curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
+    curandSetPseudoRandomGeneratorSeed(gen, time(nullptr));
 
-    util::Logger::println("Step 1: Filling C with random values");
-    thrust::transform(thrust::counting_iterator<int>(0),
-                      thrust::counting_iterator<int>(n * n), C.begin(),
-                      detail::random_fill_functor<T>(seed));
+    if constexpr (std::is_same_v<T, float>) {
+        curandGenerateUniform(gen, C_ptr, static_cast<size_t>(n) * n);
+    } else if constexpr (std::is_same_v<T, double>) {
+        curandGenerateUniformDouble(gen, C_ptr, static_cast<size_t>(n) * n);
+    } else {
+        fmt::report_error("Unsupported type");
+    }
+    
+    curandDestroyGenerator(gen);
     cudaDeviceSynchronize();
 
     if (util::Logger::is_verbose()) {
