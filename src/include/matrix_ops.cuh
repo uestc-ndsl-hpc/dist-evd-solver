@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cublas_v2.h>
+#include <curand.h>
 #include <curand_kernel.h>
 #include <fmt/format.h>
 #include <thrust/device_vector.h>
@@ -8,8 +10,6 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/transform.h>
 #include <time.h>
-#include <curand.h>
-#include <cublas_v2.h>
 
 #include <cstddef>
 #include <stdexcept>
@@ -26,51 +26,51 @@ namespace matrix_ops {
  * semantics are disabled to prevent double-destruction of the handle.
  */
 class CublasHandle {
- public:
-  CublasHandle() {
-    if (cublasCreate(&handle_) != CUBLAS_STATUS_SUCCESS) {
-      throw std::runtime_error("Failed to create cuBLAS handle.");
+   public:
+    CublasHandle() {
+        if (cublasCreate(&handle_) != CUBLAS_STATUS_SUCCESS) {
+            throw std::runtime_error("Failed to create cuBLAS handle.");
+        }
     }
-  }
 
-  ~CublasHandle() {
-    if (handle_) {
-      // It's generally safe to call cublasDestroy on a valid handle.
-      // We don't need to check the return status in a destructor.
-      cublasDestroy(handle_);
+    ~CublasHandle() {
+        if (handle_) {
+            // It's generally safe to call cublasDestroy on a valid handle.
+            // We don't need to check the return status in a destructor.
+            cublasDestroy(handle_);
+        }
     }
-  }
 
-  // Disable copy constructor and copy assignment operator
-  CublasHandle(const CublasHandle&) = delete;
-  CublasHandle& operator=(const CublasHandle&) = delete;
+    // Disable copy constructor and copy assignment operator
+    CublasHandle(const CublasHandle&) = delete;
+    CublasHandle& operator=(const CublasHandle&) = delete;
 
-  // Enable move constructor
-  CublasHandle(CublasHandle&& other) noexcept : handle_(other.handle_) {
-    other.handle_ = nullptr;
-  }
-
-  // Enable move assignment operator
-  CublasHandle& operator=(CublasHandle&& other) noexcept {
-    if (this != &other) {
-      if (handle_) {
-        cublasDestroy(handle_);
-      }
-      handle_ = other.handle_;
-      other.handle_ = nullptr;
+    // Enable move constructor
+    CublasHandle(CublasHandle&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
     }
-    return *this;
-  }
 
-  /**
-   * @brief Implicit conversion to the underlying cuBLAS handle.
-   *
-   * This allows the object to be used directly in cuBLAS API calls.
-   */
-  operator cublasHandle_t() const { return handle_; }
+    // Enable move assignment operator
+    CublasHandle& operator=(CublasHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle_) {
+                cublasDestroy(handle_);
+            }
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
 
- private:
-  cublasHandle_t handle_{nullptr};
+    /**
+     * @brief Implicit conversion to the underlying cuBLAS handle.
+     *
+     * This allows the object to be used directly in cuBLAS API calls.
+     */
+    operator cublasHandle_t() const { return handle_; }
+
+   private:
+    cublasHandle_t handle_{nullptr};
 };
 
 template <typename T>
@@ -108,7 +108,8 @@ thrust::device_vector<T> create_normal_random(size_t m, size_t n, T mean = 0.0,
  * @param handle A handle to the cuBLAS library context.
  * @param m The number of rows of matrix A.
  * @param n The number of columns of matrix A.
- * @param A_inout On input, the m x n matrix A. On output, the m x n orthogonal matrix Q.
+ * @param A_inout On input, the m x n matrix A. On output, the m x n orthogonal
+ * matrix Q.
  * @param R On output, the n x n upper triangular matrix R.
  */
 template <typename T>
