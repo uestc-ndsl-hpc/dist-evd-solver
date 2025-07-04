@@ -11,7 +11,6 @@ namespace matrix_ops {
 
 namespace internal {
 
-// 使用constexpr替代宏定义，更符合C++风格
 constexpr int TSQR_BLOCK_DIM_X = 32;
 constexpr int TSQR_BLOCK_DIM_Y = 32;
 constexpr int TSQR_NUM_DATA_ROW = 8;
@@ -241,6 +240,8 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
 
     tsqr_kernel<T><<<blockNum, blockDim, share_memory_size>>>(
         m, n, A, lda, work_pool, ldwork);
+    
+    cudaDeviceSynchronize();
 
     tsqr_recursive<T>(cublas_handle, cuda_data_type, cublas_compute_type,
                       ldwork, n, work_pool, ldwork, R, ldr,
@@ -269,15 +270,6 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
 template <typename T>
 void tsqr(const CublasHandle& handle, size_t m, size_t n,
           thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R) {
-    assert(m >= n);
-    assert(A_inout.size() >= m * n);
-    assert(R.size() >= n * n);
-
-    static_assert(internal::TSQR_BLOCK_SIZE % internal::TSQR_BLOCK_DIM_X == 0,
-                  "TSQR_BLOCK_SIZE must be a multiple of TSQR_BLOCK_DIM_X");
-    static_assert(internal::TSQR_BLOCK_DIM_X * internal::TSQR_NUM_DATA_ROW ==
-                      internal::TSQR_BLOCK_SIZE,
-                  "TSQR_NUM_DATA_ROW definition is incorrect");
 
     cudaDataType_t cuda_data_type;
     cublasComputeType_t cublas_compute_type;

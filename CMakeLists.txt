@@ -16,7 +16,8 @@ add_executable(dist-evd-solver
         src/main.cu
         src/matrix_ops/matrix_ops_print.cu
         src/matrix_ops/matrix_ops_gen.cu
-        src/matrix_ops/matrix_ops_tsqr.cu)
+        src/matrix_ops/matrix_ops_tsqr.cu
+        src/workflow/workflow_tsqr.cu)
 
 target_include_directories(dist-evd-solver
         PRIVATE

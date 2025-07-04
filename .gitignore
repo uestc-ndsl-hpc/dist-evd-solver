@@ -3,3 +3,5 @@ build
 fmt
 argh
 ref
+*.sbatch
+log
