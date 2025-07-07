@@ -1,10 +1,12 @@
 #pragma once
 
+#include <cuda_runtime.h>
 #include <fmt/core.h>
 #include <fmt/format.h>
-#include <string>
+
 #include <map>
-#include <cuda_runtime.h>
+#include <string>
+#include "fmt/base.h"
 
 namespace util {
 
@@ -16,6 +18,28 @@ class Logger {
 
     static bool is_verbose() { return get()._verbose; }
 
+    static void print_environment_info() {
+        int nDevices;
+        cudaError_t err = cudaGetDeviceCount(&nDevices);
+        if (err != cudaSuccess) {
+            error("Failed to get CUDA device count: {}", cudaGetErrorString(err));
+            return;
+        }
+
+        println("--- GPU Environment Info ---");
+        println("Number of CUDA devices: {}", nDevices);
+
+        for (int i = 0; i < nDevices; i++) {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, i);
+            println("  Device {}: {}", i, prop.name);
+            println("    Compute Capability: {}.{}", prop.major, prop.minor);
+            println("    Total Global Memory: {:.2f} GiB",
+                      prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
+        }
+        println("--------------------------");
+    }
+
     template <typename S, typename... Args>
     static void println(const S& format_str, Args&&... args) {
         if (get()._verbose) {
@@ -25,9 +49,10 @@ class Logger {
 
     template <typename... Args>
     static void error(const std::string& format_str, Args&&... args) {
-        fmt::print(stderr, ("[ERROR] " + format_str + "\n").c_str(), std::forward<Args>(args)...);
+        fmt::print(stderr, ("[ERROR] " + format_str + "\n").c_str(),
+                   std::forward<Args>(args)...);
     }
-    
+
     static void tic(const std::string& name) {
         auto it = get()._timers.find(name);
         if (it != get()._timers.end()) {
@@ -55,13 +80,40 @@ class Logger {
 
         float milliseconds = 0;
         cudaEventElapsedTime(&milliseconds, start, stop);
-        
+
         if (get()._print_time) {
             fmt::println("[TIMER] {}: {:.4f} ms", name, milliseconds);
         } else {
             println("[TIMER] {}: {:.4f} ms", name, milliseconds);
         }
 
+        cudaEventDestroy(stop);
+    }
+
+    static void toc(const std::string& name, float ops) {
+        auto it = get()._timers.find(name);
+        if (it == get()._timers.end()) {
+            error("Timer '{}' not found for toc.", name);
+            return;
+        }
+
+        cudaEvent_t start = it->second;
+        cudaEvent_t stop;
+        cudaEventCreate(&stop);
+        cudaEventRecord(stop, 0);
+        cudaEventSynchronize(stop);
+
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        if (get()._print_time) {
+            fmt::println("[TIMER] {}: {:.4f} ms", name, milliseconds);
+            auto tflops = (ops / 1e12f) / (milliseconds / 1000.0f);
+            fmt::println("[TFLOPS] {}: {:.4f} TFLOPS", name, tflops);
+        } else {
+            println("[TIMER] {}: {:.4f} ms", name, milliseconds);
+            auto tflops = (ops / 1e12f) / (milliseconds / 1000.0f);
+            fmt::println("[TFLOPS] {}: {:.4f} TFLOPS", name, tflops);
+        }
         cudaEventDestroy(stop);
     }
 
