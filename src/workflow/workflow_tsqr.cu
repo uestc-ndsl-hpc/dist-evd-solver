@@ -1,5 +1,3 @@
-#include "workflow.cuh"
-
 #include <cublas_v2.h>
 #include <fmt/format.h>
 
@@ -8,6 +6,7 @@
 
 #include "log.h"
 #include "matrix_ops.cuh"
+#include "workflow.cuh"
 
 template <typename T>
 struct subtract_op {
@@ -144,10 +143,11 @@ void run_workflow_tsqr(size_t m, size_t n, bool validate) {
     }
 
     // 2. Create input matrix A
-    auto A = matrix_ops::create_normal_random<T>(m, n);
+    auto A = matrix_ops::create_uniform_random<T>(m, n);
 
     // Keep a copy of A for validation if needed
     thrust::device_vector<T> A_copy;
+
     if (validate) {
         A_copy = A;
     }
@@ -179,7 +179,7 @@ void run_workflow_tsqr(size_t m, size_t n, bool validate) {
         // A now holds Q
         validate_tsqr(A_copy, A, R, m, n);
     }
-} 
+}
 
 template void run_workflow_tsqr<float>(size_t m, size_t n, bool validate);
 template void run_workflow_tsqr<double>(size_t m, size_t n, bool validate);
