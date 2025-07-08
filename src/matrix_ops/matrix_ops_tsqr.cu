@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "matrix_ops.cuh"
+#include "gpu_handle_wrappers.h"
 
 namespace matrix_ops {
 
@@ -268,7 +269,7 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
 }  // namespace internal
 
 template <typename T>
-void tsqr(const CublasHandle& handle, size_t m, size_t n,
+void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
           thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R) {
     cudaDataType_t cuda_data_type;
     cublasComputeType_t cublas_compute_type;
@@ -320,11 +321,11 @@ void tsqr(const CublasHandle& handle, size_t m, size_t n,
 }
 
 // Template explicit instantiations
-template void tsqr<float>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<float>(const common::CublasHandle& handle, size_t m, size_t n,
                           thrust::device_vector<float>& A_inout,
                           thrust::device_vector<float>& R);
 
-template void tsqr<double>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<double>(const common::CublasHandle& handle, size_t m, size_t n,
                            thrust::device_vector<double>& A_inout,
                            thrust::device_vector<double>& R);
 
