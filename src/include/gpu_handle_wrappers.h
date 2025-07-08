@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cublas_v2.h>
+#include <cusolverDn.h>
 
 #include <stdexcept>
 
@@ -66,6 +67,69 @@ class CublasHandle {
 
    private:
     cublasHandle_t handle_{nullptr};
+};
+
+/**
+ * @class CusolverDnHandle
+ * @brief A RAII wrapper for a cuSOLVER DN handle.
+ *
+ * This class ensures that a cuSOLVER DN handle is properly created and
+ * destroyed. It follows the Rule of Five: move semantics are enabled, but copy
+ * semantics are disabled to prevent double-destruction of the handle.
+ */
+class CusolverDnHandle {
+   public:
+    CusolverDnHandle() {
+        if (cusolverDnCreate(&handle_) != CUSOLVER_STATUS_SUCCESS) {
+            throw std::runtime_error("Failed to create cuSOLVER DN handle.");
+        }
+    }
+
+    ~CusolverDnHandle() {
+        if (handle_) {
+            // It's generally safe to call cusolverDnDestroy on a valid handle.
+            // We don't need to check the return status in a destructor.
+            cusolverDnDestroy(handle_);
+        }
+    }
+
+    // Disable copy constructor and copy assignment operator
+    CusolverDnHandle(const CusolverDnHandle&) = delete;
+    CusolverDnHandle& operator=(const CusolverDnHandle&) = delete;
+
+    // Enable move constructor
+    CusolverDnHandle(CusolverDnHandle&& other) noexcept
+        : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+
+    // Enable move assignment operator
+    CusolverDnHandle& operator=(CusolverDnHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle_) {
+                cusolverDnDestroy(handle_);
+            }
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Get the underlying cuSOLVER DN handle.
+     * @return The raw cusolverDnHandle_t.
+     */
+    cusolverDnHandle_t get() const { return handle_; }
+
+    /**
+     * @brief Implicit conversion to the underlying cuSOLVER DN handle.
+     *
+     * This allows the object to be used directly in cuSOLVER DN API calls.
+     */
+    operator cusolverDnHandle_t() const { return handle_; }
+
+   private:
+    cusolverDnHandle_t handle_{nullptr};
 };
 
 }  // namespace common

@@ -3,6 +3,7 @@
 #include <thrust/device_vector.h>
 
 #include <cassert>
+#include <cstddef>
 #include <type_traits>
 
 #include "matrix_ops.cuh"
@@ -269,7 +270,8 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
 
 template <typename T>
 void tsqr(const CublasHandle& handle, size_t m, size_t n,
-          thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R) {
+          thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R,
+          size_t lda, size_t ldr) {
     cudaDataType_t cuda_data_type;
     cublasComputeType_t cublas_compute_type;
 
@@ -307,9 +309,6 @@ void tsqr(const CublasHandle& handle, size_t m, size_t n,
     T* R_ptr = thrust::raw_pointer_cast(R.data());
     T* work_ptr = thrust::raw_pointer_cast(work.data());
 
-    int lda = m;
-    int ldr = n;
-
     int share_memory_size = internal::TSQR_BLOCK_SIZE * n * sizeof(T);
     cudaFuncSetAttribute(internal::tsqr_kernel<T>,
                          cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -319,13 +318,29 @@ void tsqr(const CublasHandle& handle, size_t m, size_t n,
                                 n, A_ptr, lda, R_ptr, ldr, work_ptr);
 }
 
+template <typename T>
+void tsqr(const CublasHandle& handle, size_t m, size_t n,
+    thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R) {
+    tsqr<T>(handle, m, n, A_inout, R, m, n);
+}
+
 // Template explicit instantiations
 template void tsqr<float>(const CublasHandle& handle, size_t m, size_t n,
                           thrust::device_vector<float>& A_inout,
                           thrust::device_vector<float>& R);
 
+template void tsqr<float>(const CublasHandle& handle, size_t m, size_t n,
+                          thrust::device_vector<float>& A_inout,
+                          thrust::device_vector<float>& R, size_t lda,
+                          size_t ldr);
+
 template void tsqr<double>(const CublasHandle& handle, size_t m, size_t n,
                            thrust::device_vector<double>& A_inout,
                            thrust::device_vector<double>& R);
+
+template void tsqr<double>(const CublasHandle& handle, size_t m, size_t n,
+                           thrust::device_vector<double>& A_inout,
+                           thrust::device_vector<double>& R, size_t lda,
+                           size_t ldr);
 
 }  // namespace matrix_ops

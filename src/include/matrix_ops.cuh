@@ -116,6 +116,11 @@ template <typename T>
 void tsqr(const CublasHandle& handle, size_t m, size_t n,
           thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R);
 
+template <typename T>
+void tsqr(const CublasHandle& handle, size_t m, size_t n,
+          thrust::device_vector<T>& A_inout, thrust::device_vector<T>& R,
+          size_t lda, size_t ldr);
+
 /**
  * @brief Convert a symmetric matrix to a symmetric banded matrix.
  *
@@ -130,6 +135,7 @@ void tsqr(const CublasHandle& handle, size_t m, size_t n,
  * symmetric banded matrix.
  */
 template <typename T>
-void sy2sb(const CublasHandle& handle, size_t n, thrust::device_vector<T>& A_inout);
+void sy2sb(const CublasHandle& handle, size_t n,
+           thrust::device_vector<T>& A_inout);
 
 }  // namespace matrix_ops

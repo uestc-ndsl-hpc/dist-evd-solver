@@ -12,19 +12,19 @@ find_package(NVHPC REQUIRED COMPONENTS MATH CUDA)
 add_subdirectory(fmt)
 add_subdirectory(argh)
 
-add_executable(dist-evd-solver
-        src/main.cu
+add_library(dist-evd-solver-lib
+        # src/main.cu
         src/matrix_ops/matrix_ops_print.cu
         src/matrix_ops/matrix_ops_gen.cu
         src/matrix_ops/matrix_ops_tsqr.cu
-        src/workflow/workflow_tsqr.cu)
+        )
 
-target_include_directories(dist-evd-solver
-        PRIVATE
+target_include_directories(dist-evd-solver-lib
+        PUBLIC
         src/include)
 
-target_link_libraries(dist-evd-solver
-        PRIVATE
+target_link_libraries(dist-evd-solver-lib
+        PUBLIC
         NVHPC::CUDART
         NVHPC::CUSPARSE
         NVHPC::CUBLAS
@@ -32,3 +32,7 @@ target_link_libraries(dist-evd-solver
         NVHPC::CURAND
         fmt::fmt
         argh)
+
+add_executable(dist-evd-solver src/main.cu src/workflow/workflow_tsqr.cu)
+
+target_link_libraries(dist-evd-solver PRIVATE dist-evd-solver-lib)
