@@ -8,8 +8,8 @@
 #include <cstddef>
 #include <type_traits>
 
-#include "../include/log.h"
-#include "../include/matrix_ops.cuh"
+#include "log.h"
+#include "matrix_ops.cuh"
 
 namespace matrix_ops {
 
