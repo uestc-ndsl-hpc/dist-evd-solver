@@ -27,6 +27,10 @@ void print(const thrust::device_vector<T>& d_vec, size_t m, size_t n,
            const std::string& title);
 
 template <typename T>
+void print(thrust::device_ptr<T> data, size_t m, size_t n,
+           const std::string& title);
+
+template <typename T>
 thrust::device_vector<T> create_symmetric_random(size_t n);
 
 template <typename T>

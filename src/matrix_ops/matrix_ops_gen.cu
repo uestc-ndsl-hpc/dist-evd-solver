@@ -113,10 +113,6 @@ thrust::device_vector<T> create_symmetric_random(size_t n) {
     detail::generate_random_inplace(
         C_ptr, n * n, detail::RandomDistribution::UNIFORM, (T)0.0, (T)1.0);
     cudaDeviceSynchronize();
-
-    if (util::Logger::is_verbose()) {
-        print(C, n, "Matrix C after random fill");
-    }
     thrust::for_each(thrust::counting_iterator<size_t>(0),
                      thrust::counting_iterator<size_t>(n * n),
                      detail::symmetrize_functor<T>(C_ptr, n));

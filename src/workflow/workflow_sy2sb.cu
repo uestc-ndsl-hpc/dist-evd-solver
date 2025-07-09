@@ -8,6 +8,9 @@ void run_workflow_sy2sb(size_t n, bool validate) {
     util::Logger::println("--- Running Sy2Sb Workflow ---");
     // 1. Generate a random symmetric matrix
     auto A = matrix_ops::create_symmetric_random<T>(n);
+    if (util::Logger::is_verbose()) {
+        matrix_ops::print(A, n, "original matrix");
+    }
 
     // 2. Run the workflow
     auto handle = common::CublasHandle();
