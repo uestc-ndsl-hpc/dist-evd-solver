@@ -9,6 +9,8 @@
 
 namespace matrix_ops {
 
+// TODO: We will support the device_ptr version of the functions.
+
 template <typename T>
 void print(const thrust::device_vector<T>& d_vec, size_t m, size_t n,
            const std::string& title) {

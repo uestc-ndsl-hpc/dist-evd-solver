@@ -269,7 +269,7 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
 }  // namespace internal
 
 template <typename T>
-void tsqr(const CublasHandle& handle, size_t m, size_t n,
+void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R,
           size_t lda, size_t ldr) {
     cudaDataType_t cuda_data_type;
@@ -319,26 +319,26 @@ void tsqr(const CublasHandle& handle, size_t m, size_t n,
 }
 
 template <typename T>
-void tsqr(const CublasHandle& handle, size_t m, size_t n,
+void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
     thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R) {
     tsqr<T>(handle, m, n, A_inout, R, m, n);
 }
 
 // Template explicit instantiations
-template void tsqr<float>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<float>(const common::CublasHandle& handle, size_t m, size_t n,
                           thrust::device_ptr<float> A_inout,
                           thrust::device_ptr<float> R);
 
-template void tsqr<float>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<float>(const common::CublasHandle& handle, size_t m, size_t n,
                           thrust::device_ptr<float> A_inout,
                           thrust::device_ptr<float> R, size_t lda,
                           size_t ldr);
 
-template void tsqr<double>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<double>(const common::CublasHandle& handle, size_t m, size_t n,
                            thrust::device_ptr<double> A_inout,
                            thrust::device_ptr<double> R);
 
-template void tsqr<double>(const CublasHandle& handle, size_t m, size_t n,
+template void tsqr<double>(const common::CublasHandle& handle, size_t m, size_t n,
                            thrust::device_ptr<double> A_inout,
                            thrust::device_ptr<double> R, size_t lda,
                            size_t ldr);

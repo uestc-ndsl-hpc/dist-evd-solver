@@ -1,0 +1,119 @@
+#pragma once
+
+#include <thrust/execution_policy.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/transform.h>
+#include <thrust/device_ptr.h>
+#include <cstddef>
+
+#include "gpu_handle_wrappers.h"
+
+namespace matrix_ops {
+namespace internal {
+namespace sy2sb {
+
+/**
+ * @brief functor for identity minus A
+ *
+ * @tparam T
+ */
+template <typename T>
+struct identity_minus_A_functor {
+    const size_t m;
+    const size_t n;
+    const size_t lda;
+
+    identity_minus_A_functor(size_t m, size_t n, size_t lda)
+        : m(m), n(n), lda(lda) {}
+
+    __host__ __device__ T operator()(const thrust::tuple<T, size_t>& t) const {
+        const auto val = thrust::get<0>(t);
+        const auto idx = thrust::get<1>(t);
+        const auto col = idx / lda;
+        const auto row = idx % lda;
+
+        if (col >= n || row >= m) {
+            return val;
+        }
+
+        if (row == col) {
+            return static_cast<T>(1.0) - val;
+        } else {
+            return -val;
+        }
+    }
+};
+
+/**
+ * @brief functor for extract Lower
+ *
+ * @tparam T
+ */
+template <typename T>
+struct extract_L_functor {
+    const size_t m;
+    const size_t n;
+    const size_t lda;
+
+    extract_L_functor(size_t m, size_t n, size_t lda) : m(m), n(n), lda(lda) {}
+
+    __host__ __device__ T operator()(const thrust::tuple<T, size_t>& t) const {
+        const auto val = thrust::get<0>(t);
+        const auto idx = thrust::get<1>(t);
+        const auto col = idx / lda;
+        const auto row = idx % lda;
+
+        if (col >= n || row >= m) {
+            return val;
+        }
+
+        if (row < col) {
+            return static_cast<T>(0.0);
+        } else if (row == col) {
+            return static_cast<T>(1.0);
+        } else {
+            return val;
+        }
+    }
+};
+
+/**
+ * @brief Get the Iminus Q L4panel Q R object
+ *
+ * @tparam T
+ * @param handle The cuSolverDn handle.
+ * @param m row size of I - Q
+ * @param n column size of I - Q
+ * @param A_inout the matrix I - Q
+ * @param lda leading dimension of A_inout
+ */
+template <typename T>
+void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
+                         size_t n, thrust::device_ptr<T> A_inout, size_t lda);
+
+/**
+ * @brief Perform QR decomposition of a panel of a symmetric matrix.
+ *
+ * @tparam T
+ * @param cublasHandle
+ * @param cusolverDnHandle
+ * @param m The number of rows of the panel.
+ * @param n The number of columns of the panel.
+ * @param A_inout The panel. This is a non-owning pointer.
+ * @param lda The leading dimension of the panel.
+ * @param R The matrix R. This is a non-owning pointer.
+ * @param ldr The leading dimension of the matrix R.
+ * @param W The matrix W. This is a non-owning pointer.
+ * @param ldw The leading dimension of the matrix W.
+ */
+template <typename T>
+void panelQR(const common::CublasHandle& cublasHandle,
+             const common::CusolverDnHandle& cusolverDnHandle, size_t m,
+             size_t n, thrust::device_ptr<T> A_inout, size_t lda,
+             thrust::device_ptr<T> R, size_t ldr, thrust::device_ptr<T> W,
+             size_t ldw);
+
+}  // namespace sy2sb
+}  // namespace internal
+}  // namespace matrix_ops

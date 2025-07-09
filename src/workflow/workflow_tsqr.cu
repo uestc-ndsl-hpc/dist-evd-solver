@@ -20,7 +20,7 @@ void validate_tsqr(const thrust::device_vector<T>& A_orig,
                    const thrust::device_vector<T>& Q,
                    const thrust::device_vector<T>& R, size_t m, size_t n) {
     fmt::println("--- Running Validation ---");
-    matrix_ops::CublasHandle handle;
+    common::CublasHandle handle;
 
     // 1. Allocate workspace for QR product
     thrust::device_vector<T> QR_prod(m * n);
@@ -103,7 +103,7 @@ void run_workflow_tsqr(size_t m, size_t n, bool validate) {
         fmt::format("Running TSQR for a {}x{} matrix...", m, n));
 
     // 1. Create cuBLAS handle using RAII wrapper
-    matrix_ops::CublasHandle handle;
+    common::CublasHandle handle;
 
     // Warm-up cuBLAS to avoid initialization overhead in timing.
     {
@@ -116,7 +116,7 @@ void run_workflow_tsqr(size_t m, size_t n, bool validate) {
         thrust::device_vector<T> d_C(n_warmup * n_warmup, 0.0);
         T alpha = 1.0;
         T beta = 0.0;
-        matrix_ops::CublasHandle handle;
+        common::CublasHandle handle;
         for (int i = 0; i < 10; i++) {
             if constexpr (std::is_same_v<T, float>) {
                 cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, n_warmup,

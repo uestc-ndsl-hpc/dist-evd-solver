@@ -19,6 +19,8 @@ add_library(dist-evd-solver-lib
         src/matrix_ops/matrix_ops_print.cu
         src/matrix_ops/matrix_ops_gen.cu
         src/matrix_ops/matrix_ops_tsqr.cu
+        src/matrix_ops/matrix_ops_sy2sb.cu
+        src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
         )
 
 target_include_directories(dist-evd-solver-lib
