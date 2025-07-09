@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 project(dist-evd-solver LANGUAGES CXX CUDA)
 
-set(CMAKE_CUDA_ARCHITECTURES "native")
+if (CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES "native")
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)

@@ -91,17 +91,14 @@ struct extract_L_functor {
  */
 template <typename T>
 void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
-                         size_t n, thrust::device_vector<T>& A_inout,
-                         size_t lda) {
+                         size_t n, thrust::device_ptr<T> A_inout, size_t lda) {
     auto lwork = (size_t)0;
     if constexpr (std::is_same_v<T, double>) {
-        cusolverDnDgetrf_bufferSize(handle, m, n,
-                                    thrust::raw_pointer_cast(A_inout.data()),
-                                    lda, &lwork);
+        cusolverDnDgetrf_bufferSize(
+            handle, m, n, thrust::raw_pointer_cast(A_inout), lda, &lwork);
     } else if constexpr (std::is_same_v<T, float>) {
-        cusolverDnSgetrf_bufferSize(handle, m, n,
-                                    thrust::raw_pointer_cast(A_inout.data()),
-                                    lda, &lwork);
+        cusolverDnSgetrf_bufferSize(
+            handle, m, n, thrust::raw_pointer_cast(A_inout), lda, &lwork);
     } else {
         throw std::runtime_error("Unsupported type.");
     }
@@ -109,12 +106,12 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     auto info = thrust::device_vector<int>(1);
     // excute LU factorization inplace
     if constexpr (std::is_same_v<T, double>) {
-        cusolverDnDgetrf(handle, m, n, thrust::raw_pointer_cast(A_inout.data()),
-                         lda, thrust::raw_pointer_cast(work.data()), NULL,
+        cusolverDnDgetrf(handle, m, n, thrust::raw_pointer_cast(A_inout), lda,
+                         thrust::raw_pointer_cast(work.data()), NULL,
                          thrust::raw_pointer_cast(info.data()));
     } else if constexpr (std::is_same_v<T, float>) {
-        cusolverDnSgetrf(handle, m, n, thrust::raw_pointer_cast(A_inout.data()),
-                         lda, thrust::raw_pointer_cast(work.data()), NULL,
+        cusolverDnSgetrf(handle, m, n, thrust::raw_pointer_cast(A_inout), lda,
+                         thrust::raw_pointer_cast(work.data()), NULL,
                          thrust::raw_pointer_cast(info.data()));
     } else {
         throw std::runtime_error("Unsupported type.");
@@ -125,12 +122,11 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     // extract the lower triangular part of the matrix
     thrust::transform(
         thrust::device,
-        thrust::make_zip_iterator(thrust::make_tuple(
-            A_inout.begin(), thrust::counting_iterator<size_t>(0))),
         thrust::make_zip_iterator(
-            thrust::make_tuple(A_inout.begin() + n * lda,
-                               thrust::counting_iterator<size_t>(n * lda))),
-        A_inout.begin(), extract_L_functor<T>(m, n, lda));
+            thrust::make_tuple(A_inout, thrust::counting_iterator<size_t>(0))),
+        thrust::make_zip_iterator(thrust::make_tuple(
+            A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
+        A_inout, extract_L_functor<T>(m, n, lda));
 }
 
 /**
@@ -141,42 +137,46 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
  * @param cusolverDnHandle
  * @param m The number of rows of the panel.
  * @param n The number of columns of the panel.
- * @param A_inout The panel.
+ * @param A_inout The panel. This is a non-owning pointer.
  * @param lda The leading dimension of the panel.
- * @param R The matrix R.
+ * @param R The matrix R. This is a non-owning pointer.
  * @param ldr The leading dimension of the matrix R.
- * @param W The matrix W.
+ * @param W The matrix W. This is a non-owning pointer.
  * @param ldw The leading dimension of the matrix W.
  */
 template <typename T>
 void panelQR(const common::CublasHandle& cublasHandle,
              const common::CusolverDnHandle& cusolverDnHandle, size_t m,
-             size_t n, thrust::device_vector<T>& A_inout, size_t lda,
-             thrust::device_vector<T>& R, size_t ldr,
-             thrust::device_vector<T>& W, size_t ldw) {
+             size_t n, thrust::device_ptr<T> A_inout, size_t lda,
+             thrust::device_ptr<T> R, size_t ldr, thrust::device_ptr<T> W,
+             size_t ldw) {
+    // tsqr, A_inout <- Q R <- R
     matrix_ops::tsqr(cublasHandle, m, n, A_inout, R, lda, ldr);
+
     // A <- I - A
     thrust::transform(
         thrust::device,
-        thrust::make_zip_iterator(thrust::make_tuple(
-            A_inout.begin(), thrust::counting_iterator<size_t>(0))),
         thrust::make_zip_iterator(
-            thrust::make_tuple(A_inout.begin() + n * lda,
-                               thrust::counting_iterator<size_t>(n * lda))),
-        A_inout.begin(), identity_minus_A_functor<T>(m, n, lda));
-    W = A_inout;
+            thrust::make_tuple(A_inout, thrust::counting_iterator<size_t>(0))),
+        thrust::make_zip_iterator(thrust::make_tuple(
+            A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
+        A_inout, identity_minus_A_functor<T>(m, n, lda));
+
+    // W = A_inout (a.k.a. I-Q)
+    thrust::copy(A_inout, A_inout + m * n, W);
+
     getIminusQL4panelQR(cusolverDnHandle, m, n, A_inout, lda);
     const auto alpha = static_cast<T>(1.0);
     if constexpr (std::is_same_v<T, double>) {
         cublasDtrsm(cublasHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
-                    CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
-                    thrust::raw_pointer_cast(A_inout.data()), lda,
-                    thrust::raw_pointer_cast(W.data()), ldw);
+                    CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
+                    thrust::raw_pointer_cast(A_inout), lda,
+                    thrust::raw_pointer_cast(W), ldw);
     } else if constexpr (std::is_same_v<T, float>) {
         cublasStrsm(cublasHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
-                    CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
-                    thrust::raw_pointer_cast(A_inout.data()), lda,
-                    thrust::raw_pointer_cast(W.data()), ldw);
+                    CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
+                    thrust::raw_pointer_cast(A_inout), lda,
+                    thrust::raw_pointer_cast(W), ldw);
     } else {
         throw std::runtime_error("Unsupported type.");
     }
@@ -187,15 +187,15 @@ void panelQR(const common::CublasHandle& cublasHandle,
 
 /**
  * @brief the function to execute symmetric matrix to symmetric band matrix
- * 
- * @tparam T 
+ *
+ * @tparam T
  * @param handle cublas handler
  * @param n size of the matrix A
  * @param A_inout the matrix A
  */
 template <typename T>
-void sy2sb(const CublasHandle& handle, size_t n,
-           thrust::device_vector<T>& A_inout) {
+void sy2sb(const common::CublasHandle& handle, size_t n,
+           thrust::device_ptr<T> A_inout) {
     // the size of the matrix A
     const auto m = (size_t)n;
     // the panel size

@@ -162,7 +162,7 @@ void run_workflow_tsqr(size_t m, size_t n, bool validate) {
     // 4. Call the TSQR function. A is passed as in-out parameter and is
     // overwritten.
     util::Logger::tic("tsqr");
-    matrix_ops::tsqr(handle, m, n, A, R);
+    matrix_ops::tsqr(handle, m, n, A.data(), R.data());
     cudaDeviceSynchronize();  // Wait for TSQR to finish before stopping timer
     util::Logger::toc("tsqr", 2 * m * n * n - 2.f / 3.f * std::pow(n, 3));
 
