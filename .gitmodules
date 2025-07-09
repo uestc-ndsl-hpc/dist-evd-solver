@@ -1,6 +1,0 @@
-[submodule "fmt"]
-	path = fmt
-	url = git@github.com:fmtlib/fmt.git
-[submodule "argh"]
-	path = argh
-	url = git@github.com:adishavit/argh

@@ -2,41 +2,80 @@ cmake_minimum_required(VERSION 3.25)
 
 project(dist-evd-solver LANGUAGES CXX CUDA)
 
-if (CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-        set(CMAKE_CUDA_ARCHITECTURES "native")
+# --- 基本设置 ---
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+    set(CMAKE_CUDA_ARCHITECTURES "native")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
+
+# --- 外部依赖管理 (FetchContent) ---
+include(FetchContent)
+
+# 1. 声明 fmt 库
+FetchContent_Declare(
+    fmt
+    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+    GIT_TAG 11.2.0
+)
+
+# 2. 声明 argh 库
+FetchContent_Declare(
+    argh
+    GIT_REPOSITORY https://github.com/adishavit/argh.git
+    GIT_TAG v1.3.2
+)
+
+# 3. 声明 googletest 库
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.17.0
+)
+
+# 下载并使依赖可用 (将 googletest 添加到列表中)
+FetchContent_MakeAvailable(fmt argh googletest)
+
+
+# --- 核心依赖 ---
 find_package(NVHPC REQUIRED COMPONENTS MATH CUDA)
 
-add_subdirectory(fmt)
-add_subdirectory(argh)
 
+# --- 项目库定义 ---
 add_library(dist-evd-solver-lib
-        # src/main.cu
-        src/matrix_ops/matrix_ops_print.cu
-        src/matrix_ops/matrix_ops_gen.cu
-        src/matrix_ops/matrix_ops_tsqr.cu
-        src/matrix_ops/matrix_ops_sy2sb.cu
-        src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
-        )
+    src/matrix_ops/matrix_ops_print.cu
+    src/matrix_ops/matrix_ops_gen.cu
+    src/matrix_ops/matrix_ops_tsqr.cu
+    src/matrix_ops/matrix_ops_sy2sb.cu
+    src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
+)
 
 target_include_directories(dist-evd-solver-lib
-        PUBLIC
-        src/include)
+    PUBLIC
+        src/include
+)
 
 target_link_libraries(dist-evd-solver-lib
-        PUBLIC
+    PUBLIC
         NVHPC::CUDART
         NVHPC::CUSPARSE
         NVHPC::CUBLAS
         NVHPC::CUSOLVER
         NVHPC::CURAND
         fmt::fmt
-        argh)
+        argh
+)
 
-add_executable(dist-evd-solver src/main.cu src/workflow/workflow_sy2sb.cu)
 
-target_link_libraries(dist-evd-solver PRIVATE dist-evd-solver-lib)
+# --- 可执行文件定义 ---
+add_executable(dist-evd-solver
+    src/main.cu
+    src/workflow/workflow_sy2sb.cu
+)
+
+target_link_libraries(dist-evd-solver
+    PRIVATE
+        dist-evd-solver-lib
+)
