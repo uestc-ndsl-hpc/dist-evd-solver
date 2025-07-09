@@ -4,7 +4,6 @@
 
 #include "gpu_handle_wrappers.h"
 #include "internal/sy2sb/sy2sb_panelqr.cuh"
-#include "matrix_ops.cuh"
 
 namespace matrix_ops {
 
@@ -18,7 +17,8 @@ namespace matrix_ops {
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
-           thrust::device_ptr<T> A_inout) {
+           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R,
+           thrust::device_ptr<T> W, size_t lda, size_t ldr, size_t ldw) {
     // the size of the matrix A
     const auto m = (size_t)n;
     // the panel size
@@ -26,17 +26,23 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     // the block size
     const auto nb = (size_t)b * 4;
 
-    auto lda = m;
-    auto ldr = n;
-    auto ldw = m;
-
-    auto R = thrust::device_vector<T>(n * ldr);
-    auto W = thrust::device_vector<T>(m * n);
-
     common::CusolverDnHandle cusolverHandle;
-    // panel QR
-    internal::sy2sb::panelQR(handle, cusolverHandle, m, n, A_inout, lda,
-                             R.data(), ldr, W.data(), ldw);
+
+    // main loop to process the matrix A's first nb panel
+    for (auto i = b; i <= nb && i < n; i += b) {
+        // the b panel size
+        const auto b_panel_m = m - i;
+        const auto b_panel_n = b;
+        // the b panel ptrs
+        auto b_panel_ptr = A_inout + i + (i - b) * lda;
+        auto b_panel_W_ptr = W + i + (i - b) * ldw;
+        auto b_panel_R_ptr = R + i + (i - b) * ldr;
+        // the b panel QR
+        internal::sy2sb::panelQR(handle, cusolverHandle, b_panel_m, b_panel_n,
+                                 b_panel_ptr, lda, b_panel_R_ptr, ldr,
+                                 b_panel_W_ptr, ldw);
+    }
+
 
     return;
 }
@@ -45,7 +51,13 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
 
 template void matrix_ops::sy2sb<float>(const common::CublasHandle& handle,
                                        size_t n,
-                                       thrust::device_ptr<float> A_inout);
+                                       thrust::device_ptr<float> A_inout,
+                                       thrust::device_ptr<float> R,
+                                       thrust::device_ptr<float> W,
+                                       size_t lda, size_t ldr, size_t ldw);
 template void matrix_ops::sy2sb<double>(const common::CublasHandle& handle,
                                         size_t n,
-                                        thrust::device_ptr<double> A_inout);
+                                        thrust::device_ptr<double> A_inout,
+                                        thrust::device_ptr<double> R,
+                                        thrust::device_ptr<double> W,
+                                        size_t lda, size_t ldr, size_t ldw);

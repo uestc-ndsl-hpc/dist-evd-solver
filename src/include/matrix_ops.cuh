@@ -74,13 +74,18 @@ void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
  *
  * @tparam T The data type of the matrix elements (e.g., float, double).
  * @param handle A handle to the cuBLAS library context.
- * @param m The number of rows of matrix A.
  * @param n The number of columns of matrix A.
- * @param A_inout On input, the m x n symmetric matrix A. On output, the m x n
+ * @param A_inout On input, the n x n symmetric matrix A. On output, the n x n
  * symmetric banded matrix.
+ * @param R On output, the n x n upper triangular matrix R.
+ * @param W On output, the n x n matrix W.
+ * @param lda The leading dimension of matrix A.
+ * @param ldr The leading dimension of matrix R.
+ * @param ldw The leading dimension of matrix W.
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
-           thrust::device_ptr<T> A_inout);
+           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R,
+           thrust::device_ptr<T> W, size_t lda, size_t ldr, size_t ldw);
 
 }  // namespace matrix_ops

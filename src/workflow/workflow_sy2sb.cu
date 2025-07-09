@@ -14,7 +14,9 @@ void run_workflow_sy2sb(size_t n, bool validate) {
 
     // 2. Run the workflow
     auto handle = common::CublasHandle();
-    matrix_ops::sy2sb(handle, n, A.data());
+    auto R = thrust::device_vector<T>(n * n);
+    auto W = thrust::device_vector<T>(n * n);
+    matrix_ops::sy2sb(handle, n, A.data(), R.data(), W.data(), n, n, n);
 
     // 3. Validate the result
     if (util::Logger::is_verbose()) {
