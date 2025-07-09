@@ -14,6 +14,11 @@ namespace matrix_ops {
 namespace internal {
 namespace sy2sb {
 
+/**
+ * @brief functor for identity minus A
+ *
+ * @tparam T
+ */
 template <typename T>
 struct identity_minus_A_functor {
     const size_t m;
@@ -41,6 +46,11 @@ struct identity_minus_A_functor {
     }
 };
 
+/**
+ * @brief functor for extract Lower
+ *
+ * @tparam T
+ */
 template <typename T>
 struct extract_L_functor {
     const size_t m;
@@ -69,6 +79,16 @@ struct extract_L_functor {
     }
 };
 
+/**
+ * @brief Get the Iminus Q L4panel Q R object
+ *
+ * @tparam T
+ * @param handle The cuSolverDn handle.
+ * @param m row size of I - Q
+ * @param n column size of I - Q
+ * @param A_inout the matrix I - Q
+ * @param lda leading dimension of A_inout
+ */
 template <typename T>
 void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
                          size_t n, thrust::device_vector<T>& A_inout,
@@ -165,6 +185,14 @@ void panelQR(const common::CublasHandle& cublasHandle,
 }  // namespace sy2sb
 }  // namespace internal
 
+/**
+ * @brief the function to execute symmetric matrix to symmetric band matrix
+ * 
+ * @tparam T 
+ * @param handle cublas handler
+ * @param n size of the matrix A
+ * @param A_inout the matrix A
+ */
 template <typename T>
 void sy2sb(const CublasHandle& handle, size_t n,
            thrust::device_vector<T>& A_inout) {
