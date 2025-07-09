@@ -1,6 +1,7 @@
+#include <thrust/device_vector.h>
+
 #include <cstddef>
 
-#include <thrust/device_vector.h>
 #include "gpu_handle_wrappers.h"
 #include "internal/sy2sb/sy2sb_panelqr.cuh"
 #include "matrix_ops.cuh"
@@ -41,3 +42,10 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
 }
 
 }  // namespace matrix_ops
+
+template void matrix_ops::sy2sb<float>(const common::CublasHandle& handle,
+                                       size_t n,
+                                       thrust::device_ptr<float> A_inout);
+template void matrix_ops::sy2sb<double>(const common::CublasHandle& handle,
+                                        size_t n,
+                                        thrust::device_ptr<double> A_inout);

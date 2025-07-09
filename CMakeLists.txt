@@ -37,6 +37,6 @@ target_link_libraries(dist-evd-solver-lib
         fmt::fmt
         argh)
 
-add_executable(dist-evd-solver src/main.cu src/workflow/workflow_tsqr.cu)
+add_executable(dist-evd-solver src/main.cu src/workflow/workflow_sy2sb.cu)
 
 target_link_libraries(dist-evd-solver PRIVATE dist-evd-solver-lib)

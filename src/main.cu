@@ -26,13 +26,13 @@ int main(int argc, char** argv) {
 
     if (cmdl[{"--double"}]) {
         util::Logger::println("Using double precision");
-        run_workflow_tsqr<double>(m, n, validate);
+        run_workflow_sy2sb<double>(n, validate);
     } else if (cmdl[{"--float"}]) {
         util::Logger::println("Using single precision");
-        run_workflow_tsqr<float>(m, n, validate);
+        run_workflow_sy2sb<float>(n, validate);
     } else {
         util::Logger::println("Using default precision");
-        run_workflow_tsqr<float>(m, n, validate);
+        run_workflow_sy2sb<float>(n, validate);
     }
 
     return 0;

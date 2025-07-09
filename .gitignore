@@ -5,3 +5,4 @@ argh
 ref
 *.sbatch
 log
+.cursor
