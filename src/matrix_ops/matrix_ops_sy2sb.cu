@@ -145,6 +145,21 @@ void panelQR(const common::CublasHandle& cublasHandle,
                                thrust::counting_iterator<size_t>(n * lda))),
         A_inout.begin(), identity_minus_A_functor<T>(m, n, lda));
     W = A_inout;
+    getIminusQL4panelQR(cusolverDnHandle, m, n, A_inout, lda);
+    const auto alpha = static_cast<T>(1.0);
+    if constexpr (std::is_same_v<T, double>) {
+        cublasDtrsm(cublasHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
+                    CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
+                    thrust::raw_pointer_cast(A_inout.data()), lda,
+                    thrust::raw_pointer_cast(W.data()), ldw);
+    } else if constexpr (std::is_same_v<T, float>) {
+        cublasStrsm(cublasHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
+                    CUBLAS_DIAG_NON_UNIT, m, n, &alpha,
+                    thrust::raw_pointer_cast(A_inout.data()), lda,
+                    thrust::raw_pointer_cast(W.data()), ldw);
+    } else {
+        throw std::runtime_error("Unsupported type.");
+    }
 }
 
 }  // namespace sy2sb
