@@ -111,7 +111,7 @@ thrust::device_vector<T> create_symmetric_random(size_t n) {
     auto C = thrust::device_vector<T>(n * n);
     auto C_ptr = thrust::raw_pointer_cast(C.data());
     detail::generate_random_inplace(
-        C_ptr, n * n, detail::RandomDistribution::NORMAL, (T)0.0, (T)1.0);
+        C_ptr, n * n, detail::RandomDistribution::UNIFORM, (T)0.0, (T)1.0);
     cudaDeviceSynchronize();
 
     if (util::Logger::is_verbose()) {

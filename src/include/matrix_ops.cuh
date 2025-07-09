@@ -77,15 +77,15 @@ void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
  * @param n The number of columns of matrix A.
  * @param A_inout On input, the n x n symmetric matrix A. On output, the n x n
  * symmetric banded matrix.
- * @param R On output, the n x n upper triangular matrix R.
- * @param W On output, the n x n matrix W.
+ * @param Y_inout On output, the n x n upper triangular matrix Y.
+ * @param W_inout On output, the n x n matrix W.
  * @param lda The leading dimension of matrix A.
- * @param ldr The leading dimension of matrix R.
+ * @param ldy The leading dimension of matrix Y.
  * @param ldw The leading dimension of matrix W.
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
-           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R,
-           thrust::device_ptr<T> W, size_t lda, size_t ldr, size_t ldw);
+           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> Y_inout,
+           thrust::device_ptr<T> W_inout, size_t lda, size_t ldy, size_t ldw);
 
 }  // namespace matrix_ops
