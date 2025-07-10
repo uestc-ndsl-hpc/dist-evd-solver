@@ -72,7 +72,9 @@ void panelQR(const common::CublasHandle& cublasHandle,
     // W = A_inout (a.k.a. I-Q)
     thrust::copy(thrust::device, A_inout, A_inout + m * n, W);
 
+    // A <- "(I - Q) --> LU" [L]
     getIminusQL4panelQR(cusolverDnHandle, m, n, A_inout, lda);
+
     const auto alpha = static_cast<T>(1.0);
     if constexpr (std::is_same_v<T, double>) {
         cublasDtrsm(cublasHandle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,

@@ -1,10 +1,11 @@
 #pragma once
 
+#include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/zip_iterator.h>
 #include <thrust/transform.h>
-#include <thrust/device_ptr.h>
+
 #include <cstddef>
 
 #include "gpu_handle_wrappers.h"

@@ -2,13 +2,78 @@
 
 #include <cstddef>
 
-#include "fmt/format.h"
-#include "gpu_handle_wrappers.h"
 #include "internal/sy2sb/sy2sb_panelqr.cuh"
-#include "log.h"
+
+#include "gpu_handle_wrappers.h"
 #include "matrix_ops.cuh"
 
 namespace matrix_ops {
+
+namespace internal {
+
+/**
+ * @brief the recursive function to compute the SBR of the panel
+ *
+ * @tparam T the data type of the matrix
+ * @param cublasHandle cublas handle
+ * @param cusolverHandle cusolver handle
+ * @param n size of the panel
+ * @param A panel ptr
+ * @param lda leading dimension of panel
+ * @param Y Y panel ptr
+ * @param ldy leading dimension of Y panel
+ * @param W W panel ptr
+ * @param ldw leading dimension of W panel
+ * @param oriA original matrix A ptr
+ * @param ldoA leading dimension of original matrix A
+ * @param Z Z panel ptr
+ * @param ldz leading dimension of Z panel
+ * @param R R panel ptr
+ * @param ldr leading dimension of R panel
+ * @param nb panel size
+ * @param b block size
+ */
+// TODO: Finish timplement of the sy2sb recursive function
+template <typename T>
+void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
+                     const common::CusolverDnHandle& cusolverHandle, size_t n,
+                     thrust::device_ptr<T> A, size_t lda,
+                     thrust::device_ptr<T> Y, size_t ldy,
+                     thrust::device_ptr<T> W, size_t ldw,
+                     thrust::device_ptr<T> oriA, size_t ldoA,
+                     thrust::device_ptr<T> Z, size_t ldz,
+                     thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
+    for (auto i = b; i <= nb && i < n; i += b) {
+        auto panel_m = b;
+        auto panel_n = b;
+        auto panel_ptr = A + i + (i - b) * lda;
+        auto panel_W_ptr = W + i + (i - b) * ldw;
+        auto panel_R_ptr = R + i + (i - b) * ldr;
+        auto panel_Y_ptr = Y + i + (i - b) * ldy;
+
+        // compute the panel QR
+        internal::sy2sb::panelQR(cublasHandle, cusolverHandle, panel_m,
+                                 panel_n, panel_ptr, lda, panel_R_ptr, ldr,
+                                 panel_W_ptr, ldw);
+        
+        // copy panel data to panelY (using lda)
+        
+        
+        
+        // TODO: copy R(Upper) to panel
+        
+
+    }
+
+    // recursive exit
+    if (n <= nb) return;
+
+    // recursive for rest
+    sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, A + nb + nb * lda,
+                    lda, Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw, oriA,
+                    ldoA, Z, ldz, R, ldr, nb, b);
+}
+}  // namespace internal
 
 /**
  * @brief the function to execute symmetric matrix to symmetric band matrix
@@ -20,54 +85,51 @@ namespace matrix_ops {
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
-           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> Y_inout,
-           thrust::device_ptr<T> W_inout, size_t lda, size_t ldy, size_t ldw) {
+           thrust::device_ptr<T> A_inout, size_t lda,
+           thrust::device_ptr<T> Y_inout, size_t ldy,
+           thrust::device_ptr<T> W_inout, size_t ldw) {
     // the size of the matrix A
     const auto m = (size_t)n;
     // the panel size
     const auto b = (size_t)32;
     // the block size
     const auto nb = (size_t)b * 4;
+
+    auto cusolverHandle = common::CusolverDnHandle();
+
     // tmp R for compute W && Y
-    auto R = thrust::device_vector<T>(n * n);
+    auto R = thrust::device_vector<T>(n * nb);
     auto R_ptr = R.data();
     auto ldr = n;
 
-    common::CusolverDnHandle cusolverHandle;
+    // oriA for SBR computations
+    auto oriA = thrust::device_vector<T>(n * n);
+    auto oriA_ptr = oriA.data();
+    thrust::copy(A_inout, A_inout + n * n, oriA_ptr);
+    auto ldoA = n;
 
-    // main loop to process the matrix A's first nb panel
-    for (auto i = b; i <= nb && i < n; i += b) {
-        // the b panel size
-        const auto b_panel_m = m - i;
-        const auto b_panel_n = b;
-        // the b panel ptrs
-        auto b_panel_ptr = A_inout + i + (i - b) * lda;
-        auto b_panel_W_ptr = W_inout + i + (i - b) * ldw;
-        auto b_panel_R_ptr = R_ptr + i + (i - b) * ldr;
-        // the b panel QR
-        if (util::Logger::is_verbose()) {
-            matrix_ops::print(b_panel_ptr, b_panel_m, b_panel_n,
-                              fmt::format("b panel {}", i));
-        }
-        internal::sy2sb::panelQR(handle, cusolverHandle, b_panel_m, b_panel_n,
-                                 b_panel_ptr, lda, b_panel_R_ptr, ldr,
-                                 b_panel_W_ptr, ldw);
-    }
+    // Z for SBR computations
+    auto Z = thrust::device_vector<T>(n * nb);
+    auto Z_ptr = Z.data();
+    auto ldz = n;
+
+    internal::sy2sb_recrusive(handle, cusolverHandle, n, A_inout, lda, Y_inout,
+                              ldy, W_inout, ldw, oriA_ptr, ldoA, Z_ptr, ldz,
+                              R_ptr, ldr, nb, b);
 
     return;
 }
 
 }  // namespace matrix_ops
 
-template void matrix_ops::sy2sb<float>(const common::CublasHandle& handle,
-                                       size_t n,
-                                       thrust::device_ptr<float> A_inout,
-                                       thrust::device_ptr<float> Y_inout,
-                                       thrust::device_ptr<float> W_inout,
-                                       size_t lda, size_t ldy, size_t ldw);
-template void matrix_ops::sy2sb<double>(const common::CublasHandle& handle,
-                                        size_t n,
-                                        thrust::device_ptr<double> A_inout,
-                                        thrust::device_ptr<double> Y_inout,
-                                        thrust::device_ptr<double> W_inout,
-                                        size_t lda, size_t ldy, size_t ldw);
+template void matrix_ops::sy2sb<float>(
+    const common::CublasHandle& handle, size_t n,
+    thrust::device_ptr<float> A_inout, size_t lda,
+    thrust::device_ptr<float> Y_inout, size_t ldy,
+    thrust::device_ptr<float> W_inout, size_t ldw);
+
+template void matrix_ops::sy2sb<double>(
+    const common::CublasHandle& handle, size_t n,
+    thrust::device_ptr<double> A_inout, size_t lda,
+    thrust::device_ptr<double> Y_inout, size_t ldy,
+    thrust::device_ptr<double> W_inout, size_t ldw);

@@ -67,8 +67,8 @@ void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
 
 template <typename T>
 void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
-          thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R,
-          size_t lda, size_t ldr);
+          thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R, size_t lda,
+          size_t ldr);
 
 /**
  * @brief Convert a symmetric matrix to a symmetric banded matrix.
@@ -89,7 +89,8 @@ void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
-           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> Y_inout,
-           thrust::device_ptr<T> W_inout, size_t lda, size_t ldy, size_t ldw);
+           thrust::device_ptr<T> A_inout, size_t lda,
+           thrust::device_ptr<T> Y_inout, size_t ldy,
+           thrust::device_ptr<T> W_inout, size_t ldw);
 
 }  // namespace matrix_ops
