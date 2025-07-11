@@ -10,11 +10,14 @@
 namespace matrix_ops {
 
 template <typename T>
-void print(thrust::device_ptr<T> data, size_t m, size_t n,
+void print(thrust::device_ptr<T> data, size_t m, size_t n, size_t lda,
            const std::string& title) {
-    size_t size = m * n;
-    thrust::host_vector<typename std::remove_const<T>::type> h_data(size);
-    thrust::copy(data, data + size, h_data.begin());
+    if (m == 0 || n == 0) {
+        return;
+    }
+    thrust::host_vector<typename std::remove_const<T>::type> h_data(m * n);
+    matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
+        data, lda, thrust::raw_pointer_cast(h_data.data()), m, m, n);
 
     if (!title.empty()) {
         fmt::println("\n--- {} ({}x{}) ---", title, m, n);
@@ -22,9 +25,9 @@ void print(thrust::device_ptr<T> data, size_t m, size_t n,
     for (size_t i = 0; i < m; ++i) {
         for (size_t j = 0; j < n; ++j) {
             if constexpr (std::is_floating_point_v<T>) {
-                fmt::print("{:8.4f} ", h_data[i * n + j]);
+                fmt::print("{:8.4f} ", h_data[j * m + i]);
             } else {
-                fmt::print("{} ", h_data[i * n + j]);
+                fmt::print("{} ", h_data[j * m + i]);
             }
         }
         fmt::println("");
@@ -35,25 +38,31 @@ void print(thrust::device_ptr<T> data, size_t m, size_t n,
 }
 
 template <typename T>
-void print(const thrust::device_vector<T>& data, size_t m, size_t n,
+void print(thrust::device_ptr<T> data, size_t m, size_t n,
+           const std::string& title) {
+    print(data, m, n, m, title);
+}
+
+template <typename T>
+void print(thrust::device_vector<T>& data, size_t m, size_t n,
            const std::string& title) {
     print(data.data(), m, n, title);
 }
 
 template <typename T>
-void print(const thrust::device_vector<T>& data, size_t n,
+void print(thrust::device_vector<T>& data, size_t n,
            const std::string& title) {
     print(data, n, n, title);
 }
 
 // Explicitly instantiate the templates to allow for separate compilation
-template void print<float>(const thrust::device_vector<float>&, size_t, size_t,
+template void print<float>(thrust::device_vector<float>&, size_t, size_t,
                            const std::string&);
-template void print<double>(const thrust::device_vector<double>&, size_t,
+template void print<double>(thrust::device_vector<double>&, size_t,
                             size_t, const std::string&);
-template void print<float>(const thrust::device_vector<float>&, size_t,
+template void print<float>(thrust::device_vector<float>&, size_t,
                            const std::string&);
-template void print<double>(const thrust::device_vector<double>&, size_t,
+template void print<double>(thrust::device_vector<double>&, size_t,
                             const std::string&);
 template void print<float>(thrust::device_ptr<float>, size_t, size_t,
                            const std::string&);

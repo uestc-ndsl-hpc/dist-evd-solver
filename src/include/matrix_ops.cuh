@@ -18,16 +18,36 @@
 
 namespace matrix_ops {
 
+/**
+ * @brief copy matrix from src to dst
+ *
+ * @tparam srcPtr source matrix ptr type
+ * @tparam dstPtr destination matrix ptr type
+ * @param src source matrix ptr
+ * @param src_ld source matrix leading dimension
+ * @param dst destination matrix ptr
+ * @param dst_ld destination matrix leading dimension
+ * @param m number of rows
+ * @param n number of columns
+ */
+template <typename srcPtr, typename dstPtr, typename T>
+void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
+                 size_t n);
+
 template <typename T>
-void print(const thrust::device_vector<T>& d_vec, size_t n,
+void print(thrust::device_vector<T>& d_vec, size_t n,
            const std::string& title);
 
 template <typename T>
-void print(const thrust::device_vector<T>& d_vec, size_t m, size_t n,
+void print(thrust::device_vector<T>& d_vec, size_t m, size_t n,
            const std::string& title);
 
 template <typename T>
 void print(thrust::device_ptr<T> data, size_t m, size_t n,
+           const std::string& title);
+
+template <typename T>
+void print(thrust::device_vector<T> h_vec, size_t m, size_t n, size_t lda,
            const std::string& title);
 
 template <typename T>

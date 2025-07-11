@@ -70,7 +70,8 @@ void panelQR(const common::CublasHandle& cublasHandle,
         A_inout, identity_minus_A_functor<T>(m, n, lda));
 
     // W = A_inout (a.k.a. I-Q)
-    thrust::copy(thrust::device, A_inout, A_inout + m * n, W);
+    matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                            T>(A_inout, lda, W, ldw, m, n);
 
     // A <- "(I - Q) --> LU" [L]
     getIminusQL4panelQR(cusolverDnHandle, m, n, A_inout, lda);
