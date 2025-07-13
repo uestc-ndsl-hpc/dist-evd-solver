@@ -11,8 +11,6 @@
 #include "log.h"
 #include "matrix_ops.cuh"
 
-// TODO: We will support the device_ptr version of the functions.
-
 namespace matrix_ops {
 
 namespace detail {
