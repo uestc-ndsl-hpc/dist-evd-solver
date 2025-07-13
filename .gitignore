@@ -6,3 +6,4 @@ ref
 *.sbatch
 log
 .cursor
+.sbatch

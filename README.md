@@ -1,56 +1,58 @@
 # dist-evd-solver
 
-`dist-evd-solver` 是一个使用 CUDA 和 NVIDIA HPC SDK 实现的高性能分布式特征值分解 (EVD) 求解器。
+[中文](README_zh.md)
 
-该项目旨在探索和实现大规模稠密对称矩阵特征值问题的高效解法，特别是在现代 GPU 加速器上。当前主要实现了两阶段法中的第一阶段，即将对称矩阵通过分块豪斯霍尔德变换转化为带状矩阵 (`Symmetric to Band-diagonal`)。
+`dist-evd-solver` is a high-performance distributed eigenvalue decomposition (EVD) solver implemented using CUDA and the NVIDIA HPC SDK.
 
-## 依赖项
+This project aims to explore and implement efficient solutions for large-scale dense symmetric eigenvalue problems, especially on modern GPU accelerators. Currently, it primarily implements the first stage of the two-stage method, which transforms a symmetric matrix into a band-diagonal matrix (`Symmetric to Band-diagonal`) using block Householder transformations.
 
-在构建本项目之前，请确保您的系统满足以下依赖：
+## Dependencies
 
-- **NVIDIA HPC SDK (nvhpc)**: 版本 `25.3` 或更高。项目依赖于 SDK 中的 `CUDA`, `CUBLAS`, `CUSOLVER` 等多个组件。
-- **CMake**: 版本 `3.25` 或更高。
-- **C++ 编译器**: 支持 C++17 标准。
+Before building this project, please ensure your system meets the following dependencies:
 
-以下依赖项将由 CMake 的 `FetchContent` 模块在构建时自动下载和配置，无需手动安装：
+- **NVIDIA HPC SDK (nvhpc)**: Version `25.3` or higher. The project relies on several components from the SDK, including `CUDA`, `CUBLAS`, and `CUSOLVER`.
+- **CMake**: Version `3.25` or higher.
+- **C++ Compiler**: Must support the C++17 standard.
 
-- **fmt**: `11.2.0` - 一个现代化的 C++ 格式化库。
-- **argh**: `v1.3.2` - 一个轻量级的 C++ 命令行参数解析库。
-- **googletest**: `v1.17.0` - Google 的 C++ 测试框架。
+The following dependencies will be automatically downloaded and configured by CMake's `FetchContent` module at build time, so no manual installation is required:
 
-## 如何构建
+- **fmt**: `11.2.0` - A modern C++ formatting library.
+- **argh**: `v1.3.2` - A lightweight C++ command-line argument parsing library.
+- **googletest**: `v1.17.0` - Google's C++ testing framework.
 
-您可以按照以下步骤使用 CMake 构建项目：
+## How to Build
 
-1.  **克隆仓库**
+You can build the project using CMake with the following steps:
+
+1.  **Clone the repository**
     ```bash
     git clone <repository-url>
     cd dist-evd-solver
     ```
 
-2.  **加载依赖环境**
-    在使用 CMake 配置项目之前，请确保已加载 NVIDIA HPC SDK 的环境模块。
+2.  **Load the dependency environment**
+    Before configuring the project with CMake, make sure to load the environment module for the NVIDIA HPC SDK.
 
-3.  **创建构建目录并运行 CMake**
+3.  **Create a build directory and run CMake**
     ```bash
     mkdir build
     cd build
     cmake ..
     ```
 
-4.  **编译项目**
+4.  **Compile the project**
     ```bash
     make -j
     ```
-    编译成功后，将在 `build` 目录下生成可执行文件 `dist-evd-solver`。
+    After successful compilation, the executable `dist-evd-solver` will be generated in the `build` directory.
 
-## 如何运行
+## How to Run
 
-本项目设计为在 HPC 环境下通过作业调度系统（如 Slurm）运行。您可以参考仓库中的 `.sbatch` 脚本来配置和提交作业。
+This project is designed to be run in an HPC environment using a job scheduling system like Slurm. You can refer to the `.sbatch` scripts in the repository to configure and submit jobs.
 
-### Slurm 作业脚本示例
+### Slurm Job Script Example
 
-以下是一个运行示例 (`run-evd-h100.sbatch`):
+Here is an example of a run script (`run-evd-h100.sbatch`):
 ```bash
 #!/bin/zsh
 #SBATCH --job-name=dist-evd-solver
@@ -62,51 +64,42 @@
 #SBATCH --mem-per-cpu=2048
 #SBATCH --time=1-00:00:00
 
-# 加载环境(请自行配置)
+# Load environment (please configure this yourself)
 module load nvhpc-hpcx
 
 echo "--- Running ---"
-# 运行可执行文件
+# Run the executable
 ./build/dist-evd-solver --float -m=65536 -n=32 -t
 echo "--- Done ---" 
 ```
-使用 `sbatch run-evd-h100.sbatch` 命令提交作业。日志文件将保存在 `log/` 目录下。
+Submit the job using the `sbatch run-evd-h100.sbatch` command. Log files will be saved in the `log/` directory.
 
-### 命令行参数
+### Command-Line Arguments
 
-可执行文件 `dist-evd-solver` 支持以下命令行参数：
+The executable `dist-evd-solver` supports the following command-line arguments:
 
-| 参数          | 描述                                           | 示例        |
-|---------------|------------------------------------------------|-------------|
-| `--float`     | 使用单精度浮点数 (float) 进行计算，默认为双精度。 | `--float`   |
-| `-m=<value>`  | 指定输入方阵的维度 (M x M)。                     | `-m=65536`  |
-| `-n=<value>`  | 指定计算中使用的块大小 (Block Size)。            | `-n=32`     |
-| `-t`, `--test`| 运行测试或计时模式。                              | `-t`        |
+| Argument      | Description                                           | Example     |
+|---------------|-------------------------------------------------------|-------------|
+| `--float`     | Use single-precision floating-point (float) for calculations; default is double-precision. | `--float`   |
+| `-m=<value>`  | Specify the dimension of the input square matrix (M x M). | `-m=65536`  |
+| `-n=<value>`  | Specify the block size used in the computation.       | `-n=32`     |
+| `-t`, `--test`| Run in test or timing mode.                           | `-t`        |
 
-**注意**: 参数的具体行为请参考 `src/main.cu` 中的实现。
+**Note**: For the specific behavior of the arguments, please refer to the implementation in `src/main.cu`.
 
-## 项目结构
+## Project Structure
 
 ```
 .
-├── CMakeLists.txt      # CMake 配置文件
-├── README.md           # 项目说明
-├── build/              # 编译输出目录
-├── log/                # 运行时日志目录
-├── src/                # 源代码目录
-│   ├── include/        # 头文件
-│   ├── matrix_ops/     # 矩阵操作相关实现
-│   ├── workflow/       # 核心算法工作流
-│   └── main.cu         # 程序主入口
-└── *.sbatch            # Slurm 作业脚本示例
+├── CMakeLists.txt      # CMake configuration file
+├── README.md           # Project description (this file)
+├── README_zh.md        # Project description (Chinese)
+├── build/              # Build output directory
+├── log/                # Runtime log directory
+├── src/                # Source code directory
+│   ├── include/        # Header files
+│   ├── matrix_ops/     # Matrix operations implementation
+│   ├── workflow/       # Core algorithm workflow
+│   └── main.cu         # Main program entry point
+└── *.sbatch            # Slurm job script examples
 ```
-
-## 开发日志与 TODO
-
-### 2025.7.10
-
-目前已经完成 `tsqr` 操作单卡版本移植，正在开发
-
-- 未兼容带 lda 的矩阵打印
-- 部分数据拷贝未兼容 lda，目前考虑包装 cudaMemcpy2D api 参照 cublasSetMatrix 之类的
-- `sy2sb` 尚未完全兼容
