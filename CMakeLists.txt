@@ -50,6 +50,7 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/matrix_ops_tsqr.cu
     src/matrix_ops/matrix_ops_sy2sb.cu
     src/matrix_ops/matrix_ops_copy.cu
+    src/matrix_ops/matrix_ops_gemm.cu
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
 )
 
@@ -80,3 +81,17 @@ target_link_libraries(dist-evd-solver
     PRIVATE
         dist-evd-solver-lib
 )
+
+# --- 测试目标配置 ---
+enable_testing()
+
+add_executable(matrix_ops_gemm_test tests/matrix_ops_gemm_test.cu)
+
+target_link_libraries(matrix_ops_gemm_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_test(NAME matrix_ops_gemm_test COMMAND matrix_ops_gemm_test)

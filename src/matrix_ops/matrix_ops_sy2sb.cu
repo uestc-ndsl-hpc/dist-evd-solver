@@ -43,7 +43,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      thrust::device_ptr<T> Z, size_t ldz,
                      thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
     for (auto i = b; i <= nb && i < n; i += b) {
-        auto panel_m = b;
+        auto panel_m = n - i;
         auto panel_n = b;
         auto panel_ptr = A + i + (i - b) * lda;
         auto panel_W_ptr = W + i + (i - b) * ldw;
@@ -59,6 +59,25 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(panel_ptr, lda, panel_Y_ptr, ldy, panel_m,
                                    panel_n);
+
+        // copy panelR data to panel (using lda)
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
+                                   panel_n);
+
+        // do gemm to compute Z,Y.W
+        // first panel process
+        if (i == b) {
+            auto panel_OriA_ptr = (oriA + b * ldoA + b);
+            matrix_ops::matrix_gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+                                    panel_OriA_ptr, ldoA, false, panel_W_ptr,
+                                    ldw, false, (T)0, Z, ldz);
+        } else {
+            auto panel_OriA_ptr = oriA + i * ldoA + i;
+            matrix_ops::matrix_gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+                                    panel_OriA_ptr, ldoA, false, panel_W_ptr,
+                                    ldw, false, (T)0, Z, ldz);
+        }
     }
 
     // recursive exit

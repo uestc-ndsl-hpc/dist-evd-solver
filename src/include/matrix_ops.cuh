@@ -19,6 +19,54 @@
 namespace matrix_ops {
 
 /**
+ * @brief General matrix multiplication.
+ *
+ * @tparam T
+ * @param handle A handle to the cuBLAS library context.
+ * @param m The number of rows of matrix A.
+ * @param n The number of columns of matrix B.
+ * @param k The number of columns of matrix A.
+ * @param alpha The scalar alpha.
+ * @param A The m x k matrix A.
+ * @param lda The leading dimension of matrix A.
+ * @param B The k x n matrix B.
+ * @param ldb The leading dimension of matrix B.
+ * @param beta The scalar beta.
+ * @param C The m x n matrix C.
+ * @param ldc The leading dimension of matrix C.
+ */
+template <typename T>
+void matrix_gemm(const common::CublasHandle& handle, size_t m, size_t n,
+                 size_t k, T alpha, thrust::device_ptr<T> A, size_t lda,
+                 thrust::device_ptr<T> B, size_t ldb, T beta,
+                 thrust::device_ptr<T> C, size_t ldc);
+
+/**
+ * @brief General matrix multiplication.
+ *
+ * @tparam T
+ * @param handle A handle to the cuBLAS library context.
+ * @param m The number of rows of matrix A.
+ * @param n The number of columns of matrix B.
+ * @param k The number of columns of matrix A.
+ * @param alpha The scalar alpha.
+ * @param A The m x k matrix A.
+ * @param lda The leading dimension of matrix A.
+ * @param transA Whether to transpose matrix A.
+ * @param B The k x n matrix B.
+ * @param ldb The leading dimension of matrix B.
+ * @param transB Whether to transpose matrix B.
+ * @param beta The scalar beta.
+ * @param C The m x n matrix C.
+ * @param ldc The leading dimension of matrix C.
+ */
+template <typename T>
+void matrix_gemm(const common::CublasHandle& handle, size_t m, size_t n,
+                 size_t k, T alpha, thrust::device_ptr<T> A, size_t lda,
+                 bool transA, thrust::device_ptr<T> B, size_t ldb, bool transB,
+                 T beta, thrust::device_ptr<T> C, size_t ldc);
+
+/**
  * @brief copy matrix from src to dst
  *
  * @tparam srcPtr source matrix ptr type
@@ -34,18 +82,55 @@ template <typename srcPtr, typename dstPtr, typename T>
 void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
                  size_t n);
 
+/**
+ * @brief print matrix for row = col = n (column major)
+ *
+ * @tparam T
+ * @param d_vec device vector
+ * @param n number of rows
+ * @param title title of the matrix
+ */
 template <typename T>
-void print(thrust::device_vector<T>& d_vec, size_t n,
-           const std::string& title);
+void print(thrust::device_vector<T>& d_vec, size_t n, const std::string& title);
 
+/**
+ * @brief print matrix for row = m, col = n (column major)
+ *
+ * @tparam T
+ * @param d_vec device vector
+ * @param m number of rows
+ * @param n number of columns
+ * @param title title of the matrix
+ */
 template <typename T>
 void print(thrust::device_vector<T>& d_vec, size_t m, size_t n,
            const std::string& title);
 
+/**
+ * @brief print matrix for row = m, col = n, and the input is device ptr (column
+ * major)
+ *
+ * @tparam T
+ * @param data device ptr
+ * @param m number of rows
+ * @param n number of columns
+ * @param title title of the matrix
+ */
 template <typename T>
 void print(thrust::device_ptr<T> data, size_t m, size_t n,
            const std::string& title);
 
+/**
+ * @brief print matrix for row = m, col = n, and the input is device ptr (column
+ * major and lda provided)
+ *
+ * @tparam T
+ * @param h_vec
+ * @param m
+ * @param n
+ * @param lda
+ * @param title
+ */
 template <typename T>
 void print(thrust::device_vector<T> h_vec, size_t m, size_t n, size_t lda,
            const std::string& title);
@@ -85,6 +170,19 @@ template <typename T>
 void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R);
 
+/**
+ * @brief In-place Tall-and-Skinny QR decomposition on a single GPU.
+ *
+ * @tparam T
+ * @param handle A handle to the cuBLAS library context.
+ * @param m The number of rows of matrix A.
+ * @param n The number of columns of matrix A.
+ * @param A_inout On input, the m x n matrix A. On output, the m x n orthogonal
+ * matrix Q.
+ * @param R On output, the n x n upper triangular matrix R.
+ * @param lda The leading dimension of matrix A.
+ * @param ldr The leading dimension of matrix R.
+ */
 template <typename T>
 void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
           thrust::device_ptr<T> A_inout, thrust::device_ptr<T> R, size_t lda,
