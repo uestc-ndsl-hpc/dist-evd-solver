@@ -46,9 +46,11 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         auto panel_m = n - i;
         auto panel_n = b;
         auto panel_ptr = A + i + (i - b) * lda;
+
         auto panel_W_ptr = W + i + (i - b) * ldw;
         auto panel_R_ptr = R + i + (i - b) * ldr;
         auto panel_Y_ptr = Y + i + (i - b) * ldy;
+        auto panel_Z_ptr = Z + i + (i - b) * ldz;
 
         // compute the panel QR
         internal::sy2sb::panelQR(cublasHandle, cusolverHandle, panel_m, panel_n,
@@ -67,16 +69,49 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         // do gemm to compute Z,Y.W
         // first panel process
+        thrust::device_vector<T> work(nb * nb);
+        auto work_ptr = work.data();
+        auto ldwork = nb;
+
         if (i == b) {
-            auto panel_OriA_ptr = (oriA + b * ldoA + b);
-            matrix_ops::matrix_gemm(cublasHandle, panel_m, n, panel_m, (T)1,
-                                    panel_OriA_ptr, ldoA, false, panel_W_ptr,
-                                    ldw, false, (T)0, Z, ldz);
+            auto panel_OriA_ptr = oriA + b * ldoA + b;
+            matrix_ops::gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+                             panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
+                             false, (T)0, Z, ldz);
+            matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
+                             ldw, true, Z, ldz, false, (T)0, work_ptr, ldwork);
+            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(0.5), panel_Y_ptr,
+                             ldy, false, work_ptr, ldwork, false, (T)1, Z, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
-            matrix_ops::matrix_gemm(cublasHandle, panel_m, n, panel_m, (T)1,
-                                    panel_OriA_ptr, ldoA, false, panel_W_ptr,
-                                    ldw, false, (T)0, Z, ldz);
+            matrix_ops::gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+                             panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
+                             false, (T)0, Z, ldz);
+            matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)1, Z + i, ldz,
+                             true, W, ldw, false, (T)0, work_ptr, ldwork);
+            matrix_ops::gemm(cublasHandle, panel_m, b, i - b, (T)(-1), Y + i,
+                             ldy, false, work_ptr, ldwork, false, (T)1,
+                             panel_Z_ptr, ldz);
+            matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)(1), Y + i,
+                             ldy, true, panel_W_ptr, ldw, false, (T)0, work_ptr,
+                             ldwork);
+            matrix_ops::gemm(cublasHandle, panel_m, b, i - b, (T)(-1), Z + i,
+                             ldz, false, work_ptr, ldwork, false, (T)1,
+                             panel_Z_ptr, ldz);
+            matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
+                             ldw, true, panel_Z_ptr, ldz, false, T(0), work_ptr,
+                             ldwork);
+            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
+                             panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
+                             (T)1, panel_Z_ptr, ldz);
+        }
+        if (i < nb) {
+            matrix_ops::gemm(cublasHandle, panel_m, b, i, (T)(-1), Y + i, ldy,
+                             false, Z + i, ldz, true, (T)1, A + i + i * lda,
+                             lda);
+            matrix_ops::gemm(cublasHandle, panel_m, b, i, (T)(-1), Z + i, ldz,
+                             false, Y + i, ldy, true, (T)1, A + i + i * lda,
+                             lda);
         }
     }
 

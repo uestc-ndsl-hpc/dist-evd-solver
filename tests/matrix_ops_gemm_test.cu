@@ -19,7 +19,7 @@ TEST(MatrixGemmTest, AllOnesMatrixMultiplicationFloat) {
     thrust::device_vector<T> C(m * n, 0.0f);
 
     // 执行GEMM运算: C = α*A*B + β*C
-    matrix_ops::matrix_gemm(cublasHandle, m, n, k, alpha,
+    matrix_ops::gemm(cublasHandle, m, n, k, alpha,
                             thrust::device_pointer_cast(A.data()), m, false,
                             thrust::device_pointer_cast(B.data()), k, false,
                             beta, thrust::device_pointer_cast(C.data()), m);
@@ -49,7 +49,7 @@ TEST(MatrixGemmTest, AllOnesMatrixMultiplicationDouble) {
     thrust::device_vector<T> C(m * n, 0.0f);
 
     // 执行GEMM运算: C = α*A*B + β*C
-    matrix_ops::matrix_gemm(cublasHandle, m, n, k, alpha,
+    matrix_ops::gemm(cublasHandle, m, n, k, alpha,
                             thrust::device_pointer_cast(A.data()), m, false,
                             thrust::device_pointer_cast(B.data()), k, false,
                             beta, thrust::device_pointer_cast(C.data()), m);
