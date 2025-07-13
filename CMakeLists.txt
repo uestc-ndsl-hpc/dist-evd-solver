@@ -4,7 +4,7 @@ project(dist-evd-solver LANGUAGES CXX CUDA)
 
 # --- 基本设置 ---
 if(CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-    set(CMAKE_CUDA_ARCHITECTURES "native")
+    set(CMAKE_CUDA_ARCHITECTURES "all")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
