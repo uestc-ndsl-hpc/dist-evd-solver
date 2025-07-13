@@ -42,6 +42,11 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      thrust::device_ptr<T> oriA, size_t ldoA,
                      thrust::device_ptr<T> Z, size_t ldz,
                      thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
+    // tmp work space for gemm
+    thrust::device_vector<T> work(nb * nb);
+    auto work_ptr = work.data();
+    auto ldwork = nb;
+
     for (auto i = b; i <= nb && i < n; i += b) {
         auto panel_m = n - i;
         auto panel_n = b;
@@ -69,9 +74,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         // do gemm to compute Z,Y.W
         // first panel process
-        thrust::device_vector<T> work(nb * nb);
-        auto work_ptr = work.data();
-        auto ldwork = nb;
 
         if (i == b) {
             auto panel_OriA_ptr = oriA + b * ldoA + b;
