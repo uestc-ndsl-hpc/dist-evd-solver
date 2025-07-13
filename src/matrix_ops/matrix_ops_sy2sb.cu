@@ -59,13 +59,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(panel_ptr, lda, panel_Y_ptr, ldy, panel_m,
                                    panel_n);
-
-        // copy R(Upper) to panelY
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(panel_R_ptr, ldr, panel_Y_ptr, ldy, panel_m,
-                                   panel_m);
-
-        
     }
 
     // recursive exit
