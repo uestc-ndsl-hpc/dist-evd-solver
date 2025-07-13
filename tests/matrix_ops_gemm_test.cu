@@ -4,7 +4,7 @@
 
 #include <matrix_ops.cuh>
 
-TEST(MatrixGemmTest, AllOnesMatrixMultiplication) {
+TEST(MatrixGemmTest, AllOnesMatrixMultiplicationFloat) {
     // 初始化CUBLAS句柄
     common::CublasHandle cublasHandle;
 
@@ -24,8 +24,8 @@ TEST(MatrixGemmTest, AllOnesMatrixMultiplication) {
                             thrust::device_pointer_cast(B.data()), k, false,
                             beta, thrust::device_pointer_cast(C.data()), m);
 
-    matrix_ops::print(thrust::device_pointer_cast(C.data()), m, n,
-                      "result matrix");
+    EXPECT_NO_THROW(matrix_ops::print(thrust::device_pointer_cast(C.data()), m,
+                                      n, "result matrix"));
 
     // 验证结果（全1矩阵相乘结果应为每个元素等于k）
     thrust::host_vector<T> h_C(C);
@@ -54,8 +54,8 @@ TEST(MatrixGemmTest, AllOnesMatrixMultiplicationDouble) {
                             thrust::device_pointer_cast(B.data()), k, false,
                             beta, thrust::device_pointer_cast(C.data()), m);
 
-    matrix_ops::print(thrust::device_pointer_cast(C.data()), m, n,
-                      "result matrix");
+    EXPECT_NO_THROW(matrix_ops::print(thrust::device_pointer_cast(C.data()), m,
+                                      n, "result matrix"));
 
     // 验证结果（全1矩阵相乘结果应为每个元素等于k）
     thrust::host_vector<T> h_C(C);

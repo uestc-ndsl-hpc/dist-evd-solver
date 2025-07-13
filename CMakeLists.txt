@@ -94,4 +94,15 @@ target_link_libraries(matrix_ops_gemm_test
         GTest::gtest_main
 )
 
+add_executable(matrix_ops_print_test tests/matrix_ops_print_test.cu)
+
+target_link_libraries(matrix_ops_print_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+
 add_test(NAME matrix_ops_gemm_test COMMAND matrix_ops_gemm_test)
+add_test(NAME matrix_ops_print_test COMMAND matrix_ops_print_test)

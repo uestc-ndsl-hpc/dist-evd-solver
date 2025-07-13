@@ -15,7 +15,7 @@ void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
     } else if (std::is_same_v<srcPtr, thrust::device_ptr<T>> &&
                std::is_same_v<dstPtr, T*>) {
         kind = cudaMemcpyKind::cudaMemcpyDeviceToHost;
-    } else if (std::is_same_v<srcPtr, thrust::host_vector<T>> &&
+    } else if (std::is_same_v<srcPtr, T*> &&
                std::is_same_v<dstPtr, thrust::device_ptr<T>>) {
         kind = cudaMemcpyKind::cudaMemcpyHostToDevice;
     } else if (std::is_same_v<srcPtr, T*> && std::is_same_v<dstPtr, T*>) {
@@ -24,7 +24,7 @@ void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
 
     cudaMemcpy2D(thrust::raw_pointer_cast(dst), dst_ld * sizeof(T),
                  thrust::raw_pointer_cast(src), src_ld * sizeof(T),
-                 n * sizeof(T), m, kind);
+                 m * sizeof(T), n, kind);
 }
 
 // Explicitly instantiate the templates to allow for separate compilation

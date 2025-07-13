@@ -15,7 +15,7 @@ void print(thrust::device_ptr<T> data, size_t m, size_t n, size_t lda,
     if (m == 0 || n == 0) {
         return;
     }
-    thrust::host_vector<typename std::remove_const<T>::type> h_data(m * n);
+    thrust::host_vector<T> h_data(m * n);
     matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
         data, lda, thrust::raw_pointer_cast(h_data.data()), m, m, n);
 
