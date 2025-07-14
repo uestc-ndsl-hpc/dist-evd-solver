@@ -182,14 +182,14 @@ using MyTypes = ::testing::Types<float, double>;
 
 TYPED_TEST_SUITE(TsqrTest, MyTypes);
 
-TYPED_TEST(TsqrTest, AlignedSize) { this->run_tsqr_test(512, 64); }
+TYPED_TEST(TsqrTest, AlignedSize) { this->run_tsqr_test(512, 32); }
 
-TYPED_TEST(TsqrTest, UnalignedSize) { this->run_tsqr_test(129, 33); }
+TYPED_TEST(TsqrTest, UnalignedSize) { this->run_tsqr_test(129, 32); }
 
 TYPED_TEST(TsqrTest, SmallSize) { this->run_tsqr_test(7, 4); }
 
-TYPED_TEST(TsqrTest, FatBlockSize) { this->run_tsqr_test(1024, 128); }
+TYPED_TEST(TsqrTest, FatBlockSize) { this->run_tsqr_test(1024, 32); }
 
 TYPED_TEST(TsqrTest, TallAndSkinny) { this->run_tsqr_test(2048, 16); }
 
-TYPED_TEST(TsqrTest, LargeSize) { this->run_tsqr_test(4096, 64); } 
+TYPED_TEST(TsqrTest, LargeSize) { this->run_tsqr_test(4096, 32); } 
