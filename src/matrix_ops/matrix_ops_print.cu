@@ -68,5 +68,9 @@ template void print<float>(thrust::device_ptr<float>, size_t, size_t,
                            const std::string&);
 template void print<double>(thrust::device_ptr<double>, size_t, size_t,
                             const std::string&);
+template void print<float>(thrust::device_ptr<float>, size_t, size_t, size_t,
+                           const std::string&);
+template void print<double>(thrust::device_ptr<double>, size_t, size_t, size_t,
+                            const std::string&);
 
 }  // namespace matrix_ops

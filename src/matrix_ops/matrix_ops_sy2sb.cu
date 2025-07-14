@@ -33,6 +33,28 @@ struct make_symmetric_functor {
         }
     }
 };
+
+/**
+ * @brief Functor to clear a submatrix to zero.
+ *
+ * @tparam T Data type of the matrix elements.
+ */
+template <typename T>
+struct clear_matrix_functor {
+    thrust::device_ptr<T> ptr_;
+    size_t rows_;
+    size_t lda_;
+
+    clear_matrix_functor(thrust::device_ptr<T> p, size_t rows, size_t lda)
+        : ptr_(p), rows_(rows), lda_(lda) {}
+
+    __device__ void operator()(const size_t& k) const {
+        size_t i = k % rows_;    // row index
+        size_t j = k / rows_;    // column index
+        ptr_[i + j * lda_] = 0;
+    }
+};
+
 /**
  * @brief the recursive function to compute the SBR of the panel
  *
@@ -66,8 +88,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      thrust::device_ptr<T> Z, size_t ldz,
                      thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
     // tmp work space for gemm
-
-    // fmt::println("sy2sb_recrusive");
 
     thrust::device_vector<T> work(nb * nb);
     auto work_ptr = work.data();
@@ -103,7 +123,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         if (i == b) {
             auto panel_OriA_ptr = oriA + b * ldoA + b;
-            matrix_ops::gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+            matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
                              false, (T)0, Z, ldz);
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
@@ -112,7 +132,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                              ldy, false, work_ptr, ldwork, false, (T)1, Z, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
-            matrix_ops::gemm(cublasHandle, panel_m, n, panel_m, (T)1,
+            matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
                              false, (T)0, Z, ldz);
             matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)1, Z + i, ldz,
@@ -158,7 +178,27 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         thrust::make_counting_iterator<size_t>(sub_matrix_n * sub_matrix_n),
         make_symmetric_functor<T>(sub_matrix_ptr, sub_matrix_n, ldoA));
 
-    matrix_ops::print(sub_matrix_ptr, sub_matrix_n, ldoA, "sub_matrix_ptr");
+    matrix_ops::print(sub_matrix_ptr, sub_matrix_n, sub_matrix_n, ldoA,
+                      "sub_matrix_ptr");
+
+    matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
+        oriA + nb + nb * ldoA, ldoA, A + nb + nb * lda, lda, sub_matrix_n,
+        sub_matrix_n);
+
+    // Clear a part of the Z matrix for the next recursive step.
+    {
+        size_t rows_to_clear = n - nb;
+        size_t cols_to_clear = nb;
+        auto ptr_to_clear = Z + b;
+        size_t total_elements = rows_to_clear * cols_to_clear;
+
+        if (rows_to_clear > 0 && cols_to_clear > 0) {
+            thrust::for_each(
+                thrust::make_counting_iterator<size_t>(0),
+                thrust::make_counting_iterator<size_t>(total_elements),
+                clear_matrix_functor<T>(ptr_to_clear, rows_to_clear, ldz));
+        }
+    }
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, A + nb + nb * lda,
@@ -180,8 +220,6 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
            thrust::device_ptr<T> A_inout, size_t lda,
            thrust::device_ptr<T> Y_inout, size_t ldy,
            thrust::device_ptr<T> W_inout, size_t ldw) {
-    // the size of the matrix A
-    const auto m = (size_t)n;
     // the panel size
     const auto b = (size_t)32;
     // the block size

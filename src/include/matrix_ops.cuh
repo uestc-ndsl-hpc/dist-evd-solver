@@ -125,6 +125,21 @@ void print(thrust::device_ptr<T> data, size_t m, size_t n,
  * major and lda provided)
  *
  * @tparam T
+ * @param data
+ * @param m
+ * @param n
+ * @param lda
+ * @param title
+ */
+template <typename T>
+void print(thrust::device_ptr<T> data, size_t m, size_t n, size_t lda,
+           const std::string& title);
+
+/**
+ * @brief print matrix for row = m, col = n, and the input is device ptr (column
+ * major and lda provided)
+ *
+ * @tparam T
  * @param h_vec
  * @param m
  * @param n
