@@ -211,4 +211,25 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
            thrust::device_ptr<T> Y_inout, size_t ldy,
            thrust::device_ptr<T> W_inout, size_t ldw);
 
+/**
+ * @brief Compute C = alpha * A * B^T + alpha * B * A^T + beta * C
+ *
+ * @tparam T
+ * @param handle A handle to the cuBLAS library context.
+ * @param n The number of rows of matrix A.
+ * @param k The number of columns of matrix A.
+ * @param alpha The scalar alpha.
+ * @param A The n x k matrix A.
+ * @param lda The leading dimension of matrix A.
+ * @param B The n x k matrix B.
+ * @param ldb The leading dimension of matrix B.
+ * @param beta The scalar beta.
+ * @param C The n x n matrix C.
+ * @param ldc The leading dimension of matrix C.
+ */
+template <typename T>
+void syr2k(const common::CublasHandle& handle, size_t n, size_t k, T alpha,
+           thrust::device_ptr<T> A, size_t lda, thrust::device_ptr<T> B,
+           size_t ldb, T beta, thrust::device_ptr<T> C, size_t ldc);
+
 }  // namespace matrix_ops
