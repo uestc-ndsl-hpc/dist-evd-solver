@@ -255,7 +255,7 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
         A, cuda_data_type, lda, (long long)TSQR_BLOCK_SIZE, work_pool,
         cuda_data_type, ldwork, (long long)n, &tzero, A, cuda_data_type, lda,
         (long long)TSQR_BLOCK_SIZE, m / TSQR_BLOCK_SIZE, cublas_compute_type,
-        CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+        CUBLAS_GEMM_DEFAULT);
 
     int mm = m % TSQR_BLOCK_SIZE;
     if (0 < mm) {
@@ -263,7 +263,7 @@ void tsqr_recursive(cublasHandle_t cublas_handle, cudaDataType_t cuda_data_type,
                      A + (m - mm), cuda_data_type, lda,
                      work_pool + (m / TSQR_BLOCK_SIZE * n), cuda_data_type,
                      ldwork, &tzero, A + (m - mm), cuda_data_type, lda,
-                     cublas_compute_type, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+                     cublas_compute_type, CUBLAS_GEMM_DEFAULT);
     }
 }
 
