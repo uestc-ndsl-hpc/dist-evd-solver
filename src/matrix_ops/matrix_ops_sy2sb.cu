@@ -49,8 +49,8 @@ struct clear_matrix_functor {
         : ptr_(p), rows_(rows), lda_(lda) {}
 
     __device__ void operator()(const size_t& k) const {
-        size_t i = k % rows_;    // row index
-        size_t j = k / rows_;    // column index
+        size_t i = k % rows_;  // row index
+        size_t j = k / rows_;  // column index
         ptr_[i + j * lda_] = 0;
     }
 };
@@ -128,8 +128,9 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                              false, (T)0, Z, ldz);
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
                              ldw, true, Z, ldz, false, (T)0, work_ptr, ldwork);
-            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5), panel_Y_ptr,
-                             ldy, false, work_ptr, ldwork, false, (T)1, Z, ldz);
+            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
+                             panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
+                             (T)1, Z, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
@@ -202,8 +203,8 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, A + nb + nb * lda,
-                    lda, Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw, oriA,
-                    ldoA, Z, ldz, R, ldr, nb, b);
+                    lda, Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw,
+                    oriA + nb + nb * ldoA, ldoA, Z, ldz, R + nb, ldr, nb, b);
 }
 }  // namespace internal
 
