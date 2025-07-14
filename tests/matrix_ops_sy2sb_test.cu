@@ -60,13 +60,13 @@ class Sy2sbTest : public ::testing::Test {
         thrust::device_vector<T> d_A_reconstructed(n * n);
 
         // Temp storage for GEMM results
-        thrust::device_vector<T> d_T1(nb * n);    // W^T * B
-        thrust::device_vector<T> d_T2(n * n);     // Y * T1
-        thrust::device_vector<T> d_T3(n * nb);    // B * W
-        thrust::device_vector<T> d_T4(n * n);     // T3 * Y^T
-        thrust::device_vector<T> d_T5(nb * nb);   // T1 * W
-        thrust::device_vector<T> d_T6(n * nb);    // Y * T5
-        thrust::device_vector<T> d_T7(n * n);     // T6 * Y^T
+        thrust::device_vector<T> d_T1(nb * n);   // W^T * B
+        thrust::device_vector<T> d_T2(n * n);    // Y * T1
+        thrust::device_vector<T> d_T3(n * nb);   // B * W
+        thrust::device_vector<T> d_T4(n * n);    // T3 * Y^T
+        thrust::device_vector<T> d_T5(nb * nb);  // T1 * W
+        thrust::device_vector<T> d_T6(n * nb);   // Y * T5
+        thrust::device_vector<T> d_T7(n * n);    // T6 * Y^T
 
         const T one = 1.0;
         const T zero = 0.0;
@@ -100,14 +100,14 @@ class Sy2sbTest : public ::testing::Test {
         // Using cublasgeam for C = alpha*A + beta*B
         // A_re = -T2
         if constexpr (std::is_same_v<T, float>) {
-            cublasSgeam(handle_->get(), CUBLAS_OP_N, CUBLAS_OP_N, n, n, &neg_one,
-                        thrust::raw_pointer_cast(d_T2.data()), n, &zero,
-                        thrust::raw_pointer_cast(d_T2.data()), n,
+            cublasSgeam(handle_->get(), CUBLAS_OP_N, CUBLAS_OP_N, n, n,
+                        &neg_one, thrust::raw_pointer_cast(d_T2.data()), n,
+                        &zero, thrust::raw_pointer_cast(d_T2.data()), n,
                         thrust::raw_pointer_cast(d_A_reconstructed.data()), n);
         } else {
-            cublasDgeam(handle_->get(), CUBLAS_OP_N, CUBLAS_OP_N, n, n, &neg_one,
-                        thrust::raw_pointer_cast(d_T2.data()), n, &zero,
-                        thrust::raw_pointer_cast(d_T2.data()), n,
+            cublasDgeam(handle_->get(), CUBLAS_OP_N, CUBLAS_OP_N, n, n,
+                        &neg_one, thrust::raw_pointer_cast(d_T2.data()), n,
+                        &zero, thrust::raw_pointer_cast(d_T2.data()), n,
                         thrust::raw_pointer_cast(d_A_reconstructed.data()), n);
         }
 
@@ -152,15 +152,13 @@ class Sy2sbTest : public ::testing::Test {
                         thrust::raw_pointer_cast(d_A_reconstructed.data()), n);
         }
 
-
         // 6. Copy back to host
         thrust::host_vector<T> h_A_reconstructed = d_A_reconstructed;
 
         // 7. Compare
         double tolerance = std::is_same_v<T, float> ? 1e-4 : 1e-10;
         for (size_t j = 0; j < n; ++j) {
-            for (size_t i = 0;
-                 i < n; ++i) {  // check full matrix
+            for (size_t i = 0; i < n; ++i) {  // check full matrix
                 const size_t index = i + j * lda;
                 const size_t index_orig = i + j * lda;
                 EXPECT_NEAR(h_A[index_orig], h_A_reconstructed[index],
@@ -181,4 +179,4 @@ TYPED_TEST(Sy2sbTest, SmallerThanNb) { this->run_sy2sb_test(64); }
 
 TYPED_TEST(Sy2sbTest, SmallSize) { this->run_sy2sb_test(129); }
 
-TYPED_TEST(Sy2sbTest, NonDivisibleSize) { this->run_sy2sb_test(300); } 
+TYPED_TEST(Sy2sbTest, NonDivisibleSize) { this->run_sy2sb_test(300); }

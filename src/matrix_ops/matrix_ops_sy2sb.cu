@@ -128,7 +128,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                              false, (T)0, Z, ldz);
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
                              ldw, true, Z, ldz, false, (T)0, work_ptr, ldwork);
-            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(0.5), panel_Y_ptr,
+            matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5), panel_Y_ptr,
                              ldy, false, work_ptr, ldwork, false, (T)1, Z, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
@@ -168,7 +168,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
     // execute syr2k
     matrix_ops::syr2k(cublasHandle, n - nb, nb, (T)(-1), Y + nb, ldy, Z + nb,
-                      ldz, (T)1, oriA + b * ldoA + b, ldoA);
+                      ldz, (T)1, oriA + nb * ldoA + nb, ldoA);
 
     // copy Lower to Upper to build a full symmetric matrix for the updated part
     auto sub_matrix_ptr = oriA + nb * ldoA + nb;
