@@ -33,9 +33,9 @@ template void matrix_copy<thrust::device_ptr<float>, thrust::device_ptr<float>,
                                  thrust::device_ptr<float>, size_t, size_t,
                                  size_t);
 template void
-matrix_copy<thrust::device_ptr<double>, thrust::device_ptr<double>, double>(
-    thrust::device_ptr<double>, size_t, thrust::device_ptr<double>, size_t,
-    size_t, size_t);
+    matrix_copy<thrust::device_ptr<double>, thrust::device_ptr<double>, double>(
+        thrust::device_ptr<double>, size_t, thrust::device_ptr<double>, size_t,
+        size_t, size_t);
 
 template void matrix_copy<thrust::device_ptr<float>, float*, float>(
     thrust::device_ptr<float>, size_t, float*, size_t, size_t, size_t);

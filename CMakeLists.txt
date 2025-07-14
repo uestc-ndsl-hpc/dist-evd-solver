@@ -131,3 +131,14 @@ target_link_libraries(matrix_ops_tsqr_test
 )
 
 add_test(NAME matrix_ops_tsqr_test COMMAND matrix_ops_tsqr_test)
+
+add_executable(matrix_ops_sy2sb_test tests/matrix_ops_sy2sb_test.cu)
+
+target_link_libraries(matrix_ops_sy2sb_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_test(NAME matrix_ops_sy2sb_test COMMAND matrix_ops_sy2sb_test)
