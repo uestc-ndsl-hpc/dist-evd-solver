@@ -125,19 +125,21 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
             auto panel_OriA_ptr = oriA + b * ldoA + b;
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
-                             false, (T)0, Z, ldz);
+                             false, (T)0, panel_Z_ptr, ldz);
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
-                             ldw, true, Z, ldz, false, (T)0, work_ptr, ldwork);
+                             ldw, true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
+                             ldwork);
             matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
                              panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
-                             (T)1, Z, ldz);
+                             (T)1, panel_Z_ptr, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
-                             false, (T)0, Z, ldz);
+                             false, (T)0, panel_Z_ptr, ldz);
             matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)1, Z + i, ldz,
-                             true, W, ldw, false, (T)0, work_ptr, ldwork);
+                             true, panel_W_ptr, ldw, false, (T)0, work_ptr,
+                             ldwork);
             matrix_ops::gemm(cublasHandle, panel_m, b, i - b, (T)(-1), Y + i,
                              ldy, false, work_ptr, ldwork, false, (T)1,
                              panel_Z_ptr, ldz);
@@ -179,16 +181,13 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         thrust::make_counting_iterator<size_t>(sub_matrix_n * sub_matrix_n),
         make_symmetric_functor<T>(sub_matrix_ptr, sub_matrix_n, ldoA));
 
-    matrix_ops::print(sub_matrix_ptr, sub_matrix_n, sub_matrix_n, ldoA,
-                      "sub_matrix_ptr");
-
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
         oriA + nb + nb * ldoA, ldoA, A + nb + nb * lda, lda, sub_matrix_n,
         sub_matrix_n);
 
     // Clear a part of the Z matrix for the next recursive step.
     {
-        size_t rows_to_clear = n - nb;
+        size_t rows_to_clear = n - nb - b;
         size_t cols_to_clear = nb;
         auto ptr_to_clear = Z + b;
         size_t total_elements = rows_to_clear * cols_to_clear;
