@@ -38,7 +38,8 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     } else {
         throw std::runtime_error("Unsupported type.");
     }
-    if (info[0] != 0) {
+    auto info_host = thrust::host_vector<int>(info);
+    if (info_host[0] != 0) {
         throw std::runtime_error("Failed to factorize the matrix.");
     }
     // extract the lower triangular part of the matrix
