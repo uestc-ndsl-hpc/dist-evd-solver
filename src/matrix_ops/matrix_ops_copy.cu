@@ -42,4 +42,14 @@ template void matrix_copy<thrust::device_ptr<float>, float*, float>(
 template void matrix_copy<thrust::device_ptr<double>, double*, double>(
     thrust::device_ptr<double>, size_t, double*, size_t, size_t, size_t);
 
+template void matrix_copy<float*, thrust::device_ptr<float>, float>(
+    float*, size_t, thrust::device_ptr<float>, size_t, size_t, size_t);
+template void matrix_copy<double*, thrust::device_ptr<double>, double>(
+    double*, size_t, thrust::device_ptr<double>, size_t, size_t, size_t);
+
+template void matrix_copy<float*, float*, float>(float*, size_t, float*, size_t,
+                                                 size_t, size_t);
+template void matrix_copy<double*, double*, double>(double*, size_t, double*,
+                                                    size_t, size_t, size_t);
+
 }  // namespace matrix_ops

@@ -142,3 +142,23 @@ target_link_libraries(matrix_ops_sy2sb_test
 )
 
 add_test(NAME matrix_ops_sy2sb_test COMMAND matrix_ops_sy2sb_test)
+
+add_executable(matrix_ops_IminusA_test tests/matrix_ops_IminusA_test.cu)
+
+target_link_libraries(matrix_ops_IminusA_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_executable(matrix_ops_copy_test tests/matrix_ops_copy_test.cu)
+
+target_link_libraries(matrix_ops_copy_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_test(NAME matrix_ops_copy_test COMMAND matrix_ops_copy_test)

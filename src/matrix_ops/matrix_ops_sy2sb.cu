@@ -186,13 +186,14 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         sub_matrix_n);
 
     // Clear a part of the Z matrix for the next recursive step.
+    // TODO: 待验证一下直接清空对不对
     {
         size_t rows_to_clear = n - nb - b;
         size_t cols_to_clear = nb;
         auto ptr_to_clear = Z + b;
         size_t total_elements = rows_to_clear * cols_to_clear;
 
-        if (rows_to_clear > 0 && cols_to_clear > 0) {
+        if (n - nb > b) {
             thrust::for_each(
                 thrust::make_counting_iterator<size_t>(0),
                 thrust::make_counting_iterator<size_t>(total_elements),
@@ -246,6 +247,11 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     internal::sy2sb_recrusive(handle, cusolverHandle, n, A_inout, lda, Y_inout,
                               ldy, W_inout, ldw, oriA_ptr, ldoA, Z_ptr, ldz,
                               R_ptr, ldr, nb, b);
+
+    // make A_inout symmetric
+    thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                     thrust::make_counting_iterator<size_t>(n * n),
+                     internal::make_symmetric_functor<T>(A_inout, n, lda));
 
     return;
 }
