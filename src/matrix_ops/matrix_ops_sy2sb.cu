@@ -174,19 +174,19 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                       ldz, (T)1, oriA + nb * ldoA + nb, ldoA);
 
     // copy Lower to Upper to build a full symmetric matrix for the updated part
-    auto sub_matrix_ptr = oriA + nb * ldoA + nb;
+    auto sub_matrix_ptr_oA = oriA + nb * ldoA + nb;
     auto sub_matrix_n = n - nb;
+    auto sub_matrix_ptr_A = A + nb * lda + nb;
     thrust::for_each(
         thrust::make_counting_iterator<size_t>(0),
         thrust::make_counting_iterator<size_t>(sub_matrix_n * sub_matrix_n),
-        make_symmetric_functor<T>(sub_matrix_ptr, sub_matrix_n, ldoA));
+        make_symmetric_functor<T>(sub_matrix_ptr_oA, sub_matrix_n, ldoA));
 
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
-        oriA + nb + nb * ldoA, ldoA, A + nb + nb * lda, lda, sub_matrix_n,
+        sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
 
     // Clear a part of the Z matrix for the next recursive step.
-    // TODO: 待验证一下直接清空对不对
     {
         size_t rows_to_clear = n - nb - b;
         size_t cols_to_clear = nb;
@@ -202,9 +202,9 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
     }
 
     // recursive for rest
-    sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, A + nb + nb * lda,
-                    lda, Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw,
-                    oriA + nb + nb * ldoA, ldoA, Z, ldz, R + nb, ldr, nb, b);
+    sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,
+                    Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw,
+                    sub_matrix_ptr_oA, ldoA, Z, ldz, R + nb, ldr, nb, b);
 }
 }  // namespace internal
 

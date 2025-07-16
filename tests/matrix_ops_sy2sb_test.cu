@@ -50,8 +50,8 @@ class Sy2sbTest : public ::testing::Test {
         thrust::device_vector<T> d_Y(n * n, (T)0.0f);
         thrust::device_vector<T> d_W(n * n, (T)0.0f);
 
-        matrix_ops::sy2sb<T>(handle_, n, A.data(), lda, d_Y.data(), ldy,
-                             d_W.data(), ldw);
+        EXPECT_NO_THROW(matrix_ops::sy2sb<T>(handle_, n, A.data(), lda, d_Y.data(), ldy,
+                             d_W.data(), ldw));
 
         auto WYT = thrust::device_vector<T>(n * n, (T)0.0f);
         matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_W.data(), n, false,
@@ -96,6 +96,12 @@ TYPED_TEST_SUITE(Sy2sbTest, MyTypes);
 TYPED_TEST(Sy2sbTest, Basic) { this->run_sy2sb_test(256); }
 
 TYPED_TEST(Sy2sbTest, SmallerThanNb) { this->run_sy2sb_test(64); }
+
+TYPED_TEST(Sy2sbTest, SmallerThanNb2) { this->run_sy2sb_test(63); }
+
+TYPED_TEST(Sy2sbTest, SmallerThanNb4) { this->run_sy2sb_test(65); }
+
+TYPED_TEST(Sy2sbTest, SmallerThanNb3) { this->run_sy2sb_test(127); }
 
 TYPED_TEST(Sy2sbTest, SmallSize) { this->run_sy2sb_test(129); }
 
