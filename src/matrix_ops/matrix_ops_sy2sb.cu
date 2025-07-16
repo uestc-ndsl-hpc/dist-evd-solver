@@ -87,8 +87,10 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      thrust::device_ptr<T> oriA, size_t ldoA,
                      thrust::device_ptr<T> Z, size_t ldz,
                      thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
+    if (n % nb != 0) {
+        throw std::runtime_error("n % nb != 0 we don't support non-divisible size");
+    }
     // tmp work space for gemm
-
     thrust::device_vector<T> work(nb * nb);
     auto work_ptr = work.data();
     auto ldwork = nb;

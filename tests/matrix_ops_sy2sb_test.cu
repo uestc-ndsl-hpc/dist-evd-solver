@@ -54,8 +54,8 @@ class Sy2sbTest : public ::testing::Test {
                              d_W.data(), ldw));
 
         auto WYT = thrust::device_vector<T>(n * n, (T)0.0f);
-        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_W.data(), n, false,
-                         d_Y.data(), n, true, (T)0.0f, WYT.data(), n);
+        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_Y.data(), n, false,
+                         d_W.data(), n, true, (T)0.0f, WYT.data(), n);
         auto WYT_ptr = WYT.data();
         thrust::transform(
             thrust::device,
@@ -93,16 +93,8 @@ class Sy2sbTest : public ::testing::Test {
 using MyTypes = ::testing::Types<float, double>;
 TYPED_TEST_SUITE(Sy2sbTest, MyTypes);
 
+TYPED_TEST(Sy2sbTest, Big) { this->run_sy2sb_test(4096); }
+
 TYPED_TEST(Sy2sbTest, Basic) { this->run_sy2sb_test(256); }
 
-TYPED_TEST(Sy2sbTest, SmallerThanNb) { this->run_sy2sb_test(64); }
-
-TYPED_TEST(Sy2sbTest, SmallerThanNb2) { this->run_sy2sb_test(63); }
-
-TYPED_TEST(Sy2sbTest, SmallerThanNb4) { this->run_sy2sb_test(65); }
-
-TYPED_TEST(Sy2sbTest, SmallerThanNb3) { this->run_sy2sb_test(127); }
-
-TYPED_TEST(Sy2sbTest, SmallSize) { this->run_sy2sb_test(129); }
-
-TYPED_TEST(Sy2sbTest, NonDivisibleSize) { this->run_sy2sb_test(3000); }
+TYPED_TEST(Sy2sbTest, Nb) { this->run_sy2sb_test(128); }
