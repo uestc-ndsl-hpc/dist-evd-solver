@@ -3,6 +3,7 @@
 #include <thrust/host_vector.h>
 #include <thrust/transform.h>
 
+#include <cstddef>
 #include <memory>
 
 #include "cublas_v2.h"
@@ -65,7 +66,7 @@ class TsqrTest : public ::testing::Test {
 
     void TearDown() override { handle_.reset(); }
 
-    void run_tsqr_test(size_t m, size_t n) {
+    void run_tsqr_test(size_t m, size_t n, bool all_one = false) {
         ASSERT_GE(m, n);
 
         const size_t lda = m;
@@ -73,9 +74,13 @@ class TsqrTest : public ::testing::Test {
 
         // Initialize input matrix A
         thrust::host_vector<T> h_A_original(m * n);
-        for (size_t i = 0; i < m * n; ++i) {
-            h_A_original[i] =
-                static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+        if (all_one) {
+            thrust::fill(h_A_original.begin(), h_A_original.end(), (T)1.0);
+        } else {
+            for (size_t i = 0; i < m * n; ++i) {
+                h_A_original[i] =
+                    static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+            }
         }
 
         // Copy to device
@@ -124,7 +129,7 @@ class TsqrTest : public ::testing::Test {
         norm_residual = d_norm_residual[0];
 
         double backward_error =
-            (norm_A_orig > 1e-9) ? (norm_residual / norm_A_orig) : 0.0;
+            ((norm_A_orig > 1e-9) ? (norm_residual / norm_A_orig) : 0.0) / n;
         double tolerance = std::is_same_v<T, float> ? 1e-5 : 1e-12;
         EXPECT_LT(backward_error, tolerance);
 
@@ -161,7 +166,7 @@ class TsqrTest : public ::testing::Test {
         norm_residual_I = d_norm_residual_I[0];
 
         double orthogonality_error =
-            (norm_I > 1e-9) ? (norm_residual_I / norm_I) : 0.0;
+            ((norm_I > 1e-9) ? (norm_residual_I / norm_I) : 0.0) / n;
         EXPECT_LT(orthogonality_error, tolerance);
 
         // --- Verification 3: Check if R is upper triangular ---
@@ -193,3 +198,7 @@ TYPED_TEST(TsqrTest, FatBlockSize) { this->run_tsqr_test(1024, 32); }
 TYPED_TEST(TsqrTest, TallAndSkinny) { this->run_tsqr_test(2048, 16); }
 
 TYPED_TEST(TsqrTest, LargeSize) { this->run_tsqr_test(4096, 32); } 
+
+TYPED_TEST(TsqrTest, AllOne) { this->run_tsqr_test(256, 32, true); }
+
+TYPED_TEST(TsqrTest, AllOneSmall) { this->run_tsqr_test(96, 32, true); }

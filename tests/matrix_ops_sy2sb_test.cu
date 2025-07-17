@@ -3,6 +3,9 @@
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
 #include <thrust/host_vector.h>
+#include <thrust/sequence.h>
+
+#include <cstddef>
 
 #include "cublas_v2.h"
 #include "gpu_handle_wrappers.h"
@@ -43,23 +46,39 @@ class Sy2sbTest : public ::testing::Test {
 
     void TearDown() override {}
 
-    void run_sy2sb_test(size_t n) {
-        auto A = matrix_ops::create_symmetric_random<T>(n);
-        run_sy2sb_test(n, A);
+    void run_sy2sb_test(size_t n, size_t nb = 128, size_t b = 32) {
+        auto A = matrix_ops::create_symmetric_random<T>(n, true);
+        run_sy2sb_test(n, A, nb, b);
     }
 
-    void run_sy2sb_test(size_t n, thrust::device_vector<T>& A) {
+    void run_sy2sb_test(size_t n, bool sequence, size_t nb = 128,
+                        size_t b = 32) {
+        auto A = thrust::device_vector<T>(n * n, 0);
+        if (sequence) {
+            thrust::sequence(thrust::device, A.begin(), A.end());
+        }
+        run_sy2sb_test(n, A, nb, b);
+    }
+
+    void run_sy2sb_test(size_t n, thrust::device_vector<T>& A, size_t nb = 128,
+                        size_t b = 32) {
         // auto A = matrix_ops::create_symmetric_random<T>(n);
         auto lda = n, ldy = n, ldw = n;
+
+        matrix_ops::print(A, n, "original A");
 
         thrust::device_vector<T> d_Y(n * n, (T)0.0f);
         thrust::device_vector<T> d_W(n * n, (T)0.0f);
 
         EXPECT_NO_THROW(matrix_ops::sy2sb<T>(handle_, n, A.data(), lda,
-                                             d_Y.data(), ldy, d_W.data(), ldw));
+                                             d_Y.data(), ldy, d_W.data(), ldw,
+                                             nb, b));
+
+        matrix_ops::print(A, n, "A after sy2sb");
+
         matrix_ops::print(d_Y, n, "Y");
         matrix_ops::print(d_W, n, "W");
-                                    
+
         // Q  = I - WYT QTBQ = A  QTQ = I
         auto transformation_matrix = thrust::device_vector<T>(n * n, (T)0.0f);
         matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_W.data(), n, false,
@@ -83,6 +102,7 @@ class Sy2sbTest : public ::testing::Test {
             thrust::make_zip_iterator(thrust::make_tuple(
                 QTQ_ptr + n * n, thrust::counting_iterator<size_t>(n * n))),
             QTQ_ptr, identity_minus_A_functor<T>(n, n, n));
+        matrix_ops::print(QTQ, n, "QTQ");
         // 计算 cublasXnrm2
         auto norm = (T)0.f;
         if constexpr (std::is_same_v<T, float>) {
@@ -105,3 +125,21 @@ TYPED_TEST(Sy2sbTest, Big) { this->run_sy2sb_test(4096); }
 TYPED_TEST(Sy2sbTest, Basic) { this->run_sy2sb_test(256); }
 
 TYPED_TEST(Sy2sbTest, Nb) { this->run_sy2sb_test(128); }
+
+TYPED_TEST(Sy2sbTest, Sequence) { this->run_sy2sb_test(256, true); }
+
+TYPED_TEST(Sy2sbTest, SmallNb) {
+    this->run_sy2sb_test(64, (size_t)32, (size_t)16);
+}
+
+TYPED_TEST(Sy2sbTest, SmallNbSequence) {
+    this->run_sy2sb_test(64, true, (size_t)32, (size_t)16);
+}
+
+TYPED_TEST(Sy2sbTest, SmallNequalNbSequence) {
+    this->run_sy2sb_test(64, true, (size_t)64, (size_t)32);
+}
+
+TYPED_TEST(Sy2sbTest, BasicSequence) {
+    this->run_sy2sb_test(256, true);
+}

@@ -27,6 +27,7 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     auto work = thrust::device_vector<T>(lwork);
     auto info = thrust::device_vector<int>(1);
     // excute LU factorization inplace
+    // matrix_ops::print(A_inout, m, n, lda, "A_inout before getrf");
     if constexpr (std::is_same_v<T, double>) {
         cusolverDnDgetrf(handle, m, n, thrust::raw_pointer_cast(A_inout), lda,
                          thrust::raw_pointer_cast(work.data()), NULL,
@@ -42,6 +43,8 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     if (info_host[0] != 0) {
         throw std::runtime_error("Failed to factorize the matrix.");
     }
+    // matrix_ops::print(A_inout, m, n, lda, "A_inout before get L");
+
     // extract the lower triangular part of the matrix
     thrust::transform(
         thrust::device,
@@ -50,6 +53,8 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
         thrust::make_zip_iterator(thrust::make_tuple(
             A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
         A_inout, extract_L_functor<T>(m, n, lda));
+
+    // matrix_ops::print(A_inout, m, n, lda, "A_inout after get L");
 }
 
 template <typename T>
@@ -58,8 +63,11 @@ void panelQR(const common::CublasHandle& cublasHandle,
              size_t n, thrust::device_ptr<T> A_inout, size_t lda,
              thrust::device_ptr<T> R, size_t ldr, thrust::device_ptr<T> W,
              size_t ldw) {
+    matrix_ops::print(A_inout, m, n, lda, "A_inout before tsqr");
     // tsqr, A_inout <- Q R
     matrix_ops::tsqr<T>(cublasHandle, m, n, A_inout, R, lda, ldr);
+
+    matrix_ops::print(A_inout, m, n, lda, "A_inout after tsqr");
 
     // A <- I - A
     thrust::transform(
@@ -70,9 +78,11 @@ void panelQR(const common::CublasHandle& cublasHandle,
             A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
         A_inout, identity_minus_A_functor<T>(m, n, lda));
 
+    // matrix_ops::print(A_inout, m, n, lda, "A_inout after I-Q");
+
     // W = A_inout (a.k.a. I-Q)
-    matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                            T>(A_inout, lda, W, ldw, m, n);
+    matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
+        A_inout, lda, W, ldw, m, n);
 
     // A <- "(I - Q) --> LU" [L]
     getIminusQL4panelQR(cusolverDnHandle, m, n, A_inout, lda);

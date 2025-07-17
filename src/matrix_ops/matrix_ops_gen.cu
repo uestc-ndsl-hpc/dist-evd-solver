@@ -19,10 +19,15 @@ enum class RandomDistribution { UNIFORM, NORMAL };
 
 template <typename T>
 void generate_random_inplace(T* C_ptr, size_t n_elements,
-                             RandomDistribution dist, T arg1, T arg2) {
+                             RandomDistribution dist, T arg1, T arg2,
+                             bool fixed_seed = false) {
     curandGenerator_t gen;
     curandCreateGenerator(&gen, CURAND_RNG_PSEUDO_DEFAULT);
-    curandSetPseudoRandomGeneratorSeed(gen, time(nullptr));
+    if (fixed_seed) {
+        curandSetPseudoRandomGeneratorSeed(gen, 1234567890);
+    } else {
+        curandSetPseudoRandomGeneratorSeed(gen, time(nullptr));
+    }
 
     if (dist == RandomDistribution::UNIFORM) {
         if constexpr (std::is_same_v<T, float>) {
@@ -103,13 +108,14 @@ thrust::device_vector<T> create_normal_random(size_t n, T mean, T stddev) {
 }
 
 template <typename T>
-thrust::device_vector<T> create_symmetric_random(size_t n) {
+thrust::device_vector<T> create_symmetric_random(size_t n, bool fixed_seed) {
     util::Logger::tic("create_symmetric_random");
     util::Logger::println("Creating test device C of size {}x{}", n, n);
     auto C = thrust::device_vector<T>(n * n);
     auto C_ptr = thrust::raw_pointer_cast(C.data());
-    detail::generate_random_inplace(
-        C_ptr, n * n, detail::RandomDistribution::UNIFORM, (T)0.0, (T)1.0);
+    detail::generate_random_inplace(C_ptr, n * n,
+                                    detail::RandomDistribution::UNIFORM, (T)0.0,
+                                    (T)1.0, fixed_seed);
     cudaDeviceSynchronize();
     thrust::for_each(thrust::counting_iterator<size_t>(0),
                      thrust::counting_iterator<size_t>(n * n),
@@ -138,7 +144,9 @@ template thrust::device_vector<double> create_normal_random<double>(size_t,
                                                                     size_t,
                                                                     double,
                                                                     double);
-template thrust::device_vector<float> create_symmetric_random<float>(size_t);
-template thrust::device_vector<double> create_symmetric_random<double>(size_t);
+template thrust::device_vector<float> create_symmetric_random<float>(size_t,
+                                                                     bool);
+template thrust::device_vector<double> create_symmetric_random<double>(size_t,
+                                                                       bool);
 
 }  // namespace matrix_ops

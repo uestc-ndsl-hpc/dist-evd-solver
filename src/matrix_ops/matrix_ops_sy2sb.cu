@@ -86,14 +86,16 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      thrust::device_ptr<T> W, size_t ldw,
                      thrust::device_ptr<T> oriA, size_t ldoA,
                      thrust::device_ptr<T> Z, size_t ldz,
-                     thrust::device_ptr<T> R, size_t ldr, size_t nb, size_t b) {
+                     thrust::device_ptr<T> R, size_t ldr,
+                     thrust::device_ptr<T> work_ptr, size_t ldwork, size_t nb,
+                     size_t b) {
     if (n % nb != 0) {
-        throw std::runtime_error("n % nb != 0 we don't support non-divisible size");
+        throw std::runtime_error(
+            "n % nb != 0 we don't support non-divisible size");
     }
     // tmp work space for gemm
-    thrust::device_vector<T> work(nb * nb);
-    auto work_ptr = work.data();
-    auto ldwork = nb;
+    // thrust::device_vector<T> work(nb * nb);
+    // auto ldwork = nb;
 
     for (auto i = b; i <= nb && i < n; i += b) {
         auto panel_m = n - i;
@@ -188,25 +190,11 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
 
-    // Clear a part of the Z matrix for the next recursive step.
-    {
-        size_t rows_to_clear = n - nb - b;
-        size_t cols_to_clear = nb;
-        auto ptr_to_clear = Z + b;
-        size_t total_elements = rows_to_clear * cols_to_clear;
-
-        if (n - nb > b) {
-            thrust::for_each(
-                thrust::make_counting_iterator<size_t>(0),
-                thrust::make_counting_iterator<size_t>(total_elements),
-                clear_matrix_functor<T>(ptr_to_clear, rows_to_clear, ldz));
-        }
-    }
-
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,
                     Y + nb + nb * ldy, ldy, W + nb + nb * ldw, ldw,
-                    sub_matrix_ptr_oA, ldoA, Z, ldz, R + nb, ldr, nb, b);
+                    sub_matrix_ptr_oA, ldoA, Z, ldz, R + nb, ldr, work_ptr,
+                    ldwork, nb, b);
 }
 }  // namespace internal
 
@@ -217,17 +205,19 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
  * @param handle cublas handler
  * @param n size of the matrix A
  * @param A_inout the matrix A
+ * @param lda leading dimension of matrix A
+ * @param Y_inout the matrix Y
+ * @param ldy leading dimension of matrix Y
+ * @param W_inout the matrix W
+ * @param ldw leading dimension of matrix W
+ * @param nb the first size of the block
+ * @param b the second size of the block
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
            thrust::device_ptr<T> A_inout, size_t lda,
            thrust::device_ptr<T> Y_inout, size_t ldy,
-           thrust::device_ptr<T> W_inout, size_t ldw) {
-    // the panel size
-    const auto b = (size_t)32;
-    // the block size
-    const auto nb = (size_t)b * 4;
-
+           thrust::device_ptr<T> W_inout, size_t ldw, size_t nb, size_t b) {
     auto cusolverHandle = common::CusolverDnHandle();
 
     // tmp R for compute W && Y
@@ -246,9 +236,13 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     auto Z_ptr = Z.data();
     auto ldz = n;
 
+    // tmp work space for gemm
+    auto work = thrust::device_vector<T>(nb * nb);
+    auto ldwork = nb;
+
     internal::sy2sb_recrusive(handle, cusolverHandle, n, A_inout, lda, Y_inout,
                               ldy, W_inout, ldw, oriA_ptr, ldoA, Z_ptr, ldz,
-                              R_ptr, ldr, nb, b);
+                              R_ptr, ldr, work.data(), ldwork, nb, b);
 
     // make A_inout symmetric
     thrust::for_each(thrust::make_counting_iterator<size_t>(0),
@@ -264,10 +258,10 @@ template void matrix_ops::sy2sb<float>(
     const common::CublasHandle& handle, size_t n,
     thrust::device_ptr<float> A_inout, size_t lda,
     thrust::device_ptr<float> Y_inout, size_t ldy,
-    thrust::device_ptr<float> W_inout, size_t ldw);
+    thrust::device_ptr<float> W_inout, size_t ldw, size_t nb, size_t b);
 
 template void matrix_ops::sy2sb<double>(
     const common::CublasHandle& handle, size_t n,
     thrust::device_ptr<double> A_inout, size_t lda,
     thrust::device_ptr<double> Y_inout, size_t ldy,
-    thrust::device_ptr<double> W_inout, size_t ldw);
+    thrust::device_ptr<double> W_inout, size_t ldw, size_t nb, size_t b);

@@ -36,10 +36,9 @@ namespace matrix_ops {
  * @param ldc The leading dimension of matrix C.
  */
 template <typename T>
-void gemm(const common::CublasHandle& handle, size_t m, size_t n,
-                 size_t k, T alpha, thrust::device_ptr<T> A, size_t lda,
-                 thrust::device_ptr<T> B, size_t ldb, T beta,
-                 thrust::device_ptr<T> C, size_t ldc);
+void gemm(const common::CublasHandle& handle, size_t m, size_t n, size_t k,
+          T alpha, thrust::device_ptr<T> A, size_t lda, thrust::device_ptr<T> B,
+          size_t ldb, T beta, thrust::device_ptr<T> C, size_t ldc);
 
 /**
  * @brief General matrix multiplication.
@@ -61,10 +60,10 @@ void gemm(const common::CublasHandle& handle, size_t m, size_t n,
  * @param ldc The leading dimension of matrix C.
  */
 template <typename T>
-void gemm(const common::CublasHandle& handle, size_t m, size_t n,
-                 size_t k, T alpha, thrust::device_ptr<T> A, size_t lda,
-                 bool transA, thrust::device_ptr<T> B, size_t ldb, bool transB,
-                 T beta, thrust::device_ptr<T> C, size_t ldc);
+void gemm(const common::CublasHandle& handle, size_t m, size_t n, size_t k,
+          T alpha, thrust::device_ptr<T> A, size_t lda, bool transA,
+          thrust::device_ptr<T> B, size_t ldb, bool transB, T beta,
+          thrust::device_ptr<T> C, size_t ldc);
 
 /**
  * @brief copy matrix from src to dst
@@ -151,7 +150,7 @@ void print(thrust::device_vector<T> h_vec, size_t m, size_t n, size_t lda,
            const std::string& title);
 
 template <typename T>
-thrust::device_vector<T> create_symmetric_random(size_t n);
+thrust::device_vector<T> create_symmetric_random(size_t n, bool fixed_seed = false);
 
 template <typename T>
 thrust::device_vector<T> create_uniform_random(size_t n);
@@ -219,12 +218,15 @@ void tsqr(const common::CublasHandle& handle, size_t m, size_t n,
  * @param lda The leading dimension of matrix A.
  * @param ldy The leading dimension of matrix Y.
  * @param ldw The leading dimension of matrix W.
+ * @param nb The first size of the block.
+ * @param b The second size of the block.
  */
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n,
            thrust::device_ptr<T> A_inout, size_t lda,
            thrust::device_ptr<T> Y_inout, size_t ldy,
-           thrust::device_ptr<T> W_inout, size_t ldw);
+           thrust::device_ptr<T> W_inout, size_t ldw, size_t nb = 128,
+           size_t b = 32);
 
 /**
  * @brief Compute C = alpha * A * B^T + alpha * B * A^T + beta * C
