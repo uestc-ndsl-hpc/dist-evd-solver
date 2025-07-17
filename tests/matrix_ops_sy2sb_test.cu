@@ -45,28 +45,36 @@ class Sy2sbTest : public ::testing::Test {
 
     void run_sy2sb_test(size_t n) {
         auto A = matrix_ops::create_symmetric_random<T>(n);
+        run_sy2sb_test(n, A);
+    }
+
+    void run_sy2sb_test(size_t n, thrust::device_vector<T>& A) {
+        // auto A = matrix_ops::create_symmetric_random<T>(n);
         auto lda = n, ldy = n, ldw = n;
 
         thrust::device_vector<T> d_Y(n * n, (T)0.0f);
         thrust::device_vector<T> d_W(n * n, (T)0.0f);
 
-        EXPECT_NO_THROW(matrix_ops::sy2sb<T>(handle_, n, A.data(), lda, d_Y.data(), ldy,
-                             d_W.data(), ldw));
-
-        auto WYT = thrust::device_vector<T>(n * n, (T)0.0f);
-        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_Y.data(), n, false,
-                         d_W.data(), n, true, (T)0.0f, WYT.data(), n);
-        auto WYT_ptr = WYT.data();
+        EXPECT_NO_THROW(matrix_ops::sy2sb<T>(handle_, n, A.data(), lda,
+                                             d_Y.data(), ldy, d_W.data(), ldw));
+        matrix_ops::print(d_Y, n, "Y");
+        matrix_ops::print(d_W, n, "W");
+                                    
+        // Q  = I - WYT QTBQ = A  QTQ = I
+        auto transformation_matrix = thrust::device_vector<T>(n * n, (T)0.0f);
+        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_W.data(), n, false,
+                         d_Y.data(), n, true, (T)0.0f, transformation_matrix.data(), n);
+        auto transformation_ptr = transformation_matrix.data();
         thrust::transform(
             thrust::device,
             thrust::make_zip_iterator(thrust::make_tuple(
-                WYT_ptr, thrust::counting_iterator<size_t>(0))),
+                transformation_ptr, thrust::counting_iterator<size_t>(0))),
             thrust::make_zip_iterator(thrust::make_tuple(
-                WYT_ptr + n * n, thrust::counting_iterator<size_t>(n * n))),
-            WYT_ptr, identity_minus_A_functor<T>(n, n, lda));
+                transformation_ptr + n * n, thrust::counting_iterator<size_t>(n * n))),
+            transformation_ptr, identity_minus_A_functor<T>(n, n, lda));
         auto QTQ = thrust::device_vector<T>(n * n, (T)0.0f);
-        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, WYT_ptr, n, true,
-                         WYT_ptr, n, false, (T)0.0f, QTQ.data(), n);
+        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, transformation_ptr, n, true, transformation_ptr,
+                         n, false, (T)0.0f, QTQ.data(), n);
         auto QTQ_ptr = QTQ.data();
         thrust::transform(
             thrust::device,
@@ -84,7 +92,6 @@ class Sy2sbTest : public ::testing::Test {
             cublasDnrm2(handle_, n * n, QTQ.data().get(), 1, &norm);
             ASSERT_NEAR(norm / n, 0.0, 1e-10);
         }
-       
     }
 
     common::CublasHandle handle_;
