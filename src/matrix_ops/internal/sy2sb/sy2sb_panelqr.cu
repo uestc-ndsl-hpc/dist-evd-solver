@@ -63,11 +63,9 @@ void panelQR(const common::CublasHandle& cublasHandle,
              size_t n, thrust::device_ptr<T> A_inout, size_t lda,
              thrust::device_ptr<T> R, size_t ldr, thrust::device_ptr<T> W,
              size_t ldw) {
-    matrix_ops::print(A_inout, m, n, lda, "A_inout before tsqr");
     // tsqr, A_inout <- Q R
     matrix_ops::tsqr<T>(cublasHandle, m, n, A_inout, R, lda, ldr);
 
-    matrix_ops::print(A_inout, m, n, lda, "A_inout after tsqr");
 
     // A <- I - A
     thrust::transform(

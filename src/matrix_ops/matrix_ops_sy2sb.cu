@@ -77,7 +77,6 @@ struct clear_matrix_functor {
  * @param nb panel size
  * @param b block size
  */
-// TODO: Finish timplement of the sy2sb recursive function
 template <typename T>
 void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                      const common::CusolverDnHandle& cusolverHandle, size_t n,
@@ -93,9 +92,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         throw std::runtime_error(
             "n % nb != 0 we don't support non-divisible size");
     }
-    // tmp work space for gemm
-    // thrust::device_vector<T> work(nb * nb);
-    // auto ldwork = nb;
 
     for (auto i = b; i <= nb && i < n; i += b) {
         auto panel_m = n - i;
@@ -117,45 +113,59 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                                 T>(panel_ptr, lda, panel_Y_ptr, ldy, panel_m,
                                    panel_n);
 
+        // print W && Y for debug
+        matrix_ops::print(panel_W_ptr, panel_m, panel_n, ldw, "panel_W_ptr");
+        matrix_ops::print(panel_Y_ptr, panel_n, panel_n, ldy, "panel_Y_ptr");
+
         // copy panelR data to panel (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
                                    panel_n);
-
-        // do gemm to compute Z,Y.W
+        
+        // update A by ZY mode
         // first panel process
 
         if (i == b) {
             auto panel_OriA_ptr = oriA + b * ldoA + b;
+            // panel_z = panel_oa * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
                              false, (T)0, panel_Z_ptr, ldz);
+            // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
                              ldw, true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
                              ldwork);
+            // panel_z = panel_z - panel_y * panel_z^T * panel_z
             matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
                              panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
                              (T)1, panel_Z_ptr, ldz);
         } else {
             auto panel_OriA_ptr = oriA + i * ldoA + i;
+            // panel_z = panel_oa * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
                              false, (T)0, panel_Z_ptr, ldz);
+            // panel_tmp = panel_z^T * panel_w
             matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)1, Z + i, ldz,
                              true, panel_W_ptr, ldw, false, (T)0, work_ptr,
                              ldwork);
+            // panel_z = panel_z - Y+i * panel_z^T * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, i - b, (T)(-1), Y + i,
                              ldy, false, work_ptr, ldwork, false, (T)1,
                              panel_Z_ptr, ldz);
+            // panel_tmp = Y+i^T * panel_w
             matrix_ops::gemm(cublasHandle, i - b, b, panel_m, (T)(1), Y + i,
                              ldy, true, panel_W_ptr, ldw, false, (T)0, work_ptr,
                              ldwork);
+            // panel_z = panel_z - (Z + i) * Y+i^T * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, i - b, (T)(-1), Z + i,
                              ldz, false, work_ptr, ldwork, false, (T)1,
                              panel_Z_ptr, ldz);
+            // panel_tmp = panel_w^T * panel_z
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
                              ldw, true, panel_Z_ptr, ldz, false, T(0), work_ptr,
                              ldwork);
+            // panel_z = panel_z - 0.5 * panel_y * panel_w^T * panel_z
             matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
                              panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
                              (T)1, panel_Z_ptr, ldz);
@@ -189,6 +199,8 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
         sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
+
+    thrust::fill(Z, Z + n * nb, (T)0);
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,
