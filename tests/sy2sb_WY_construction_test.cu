@@ -158,14 +158,14 @@ TEST_F(SY2SBWYConstructionTest, WYOrthogonalityTest) {
     }
     
     // 计算Q = I - W * Y^T (经济型QR分解，Q是m×n)
-    thrust::host_vector<double> h_Q(m * n);
+    thrust::host_vector<double> h_Q_mn(m * n);
     for (size_t i = 0; i < m; ++i) {
         for (size_t j = 0; j < n; ++j) {
             double sum = 0.0;
             for (size_t k = 0; k < n; ++k) {
                 sum += h_W[i + k * m] * h_Y[j + k * m];
             }
-            h_Q[i + j * m] = (i == j && i < n) ? 1.0 - sum : -sum;
+            h_Q_mn[i + j * m] = (i == j && i < n) ? 1.0 - sum : -sum;
         }
     }
     
@@ -175,7 +175,7 @@ TEST_F(SY2SBWYConstructionTest, WYOrthogonalityTest) {
         for (size_t j = 0; j < n; ++j) {
             double sum = 0.0;
             for (size_t k = 0; k < m; ++k) {
-                sum += h_Q[k + i * m] * h_Q[k + j * m];
+                sum += h_Q_mn[k + i * m] * h_Q_mn[k + j * m];
             }
             h_QTQ[i + j * n] = sum;
         }
@@ -232,14 +232,14 @@ TEST_F(SY2SBWYConstructionTest, IWYTvsTSQRConsistencyTest) {
     }
     
     // 计算Q = I - W * Y^T (经济型QR分解，Q是m×n)
-    thrust::host_vector<double> h_Q_wy(m * n);
+    thrust::host_vector<double> h_Q_wy_mn(m * n);
     for (size_t i = 0; i < m; ++i) {
         for (size_t j = 0; j < n; ++j) {
             double sum = 0.0;
             for (size_t k = 0; k < n; ++k) {
                 sum += h_W[i + k * m] * h_Y[j + k * m];
             }
-            h_Q_wy[i + j * m] = (i == j && i < n) ? 1.0 - sum : -sum;
+            h_Q_wy_mn[i + j * m] = (i == j && i < n) ? 1.0 - sum : -sum;
         }
     }
     
@@ -261,9 +261,9 @@ TEST_F(SY2SBWYConstructionTest, IWYTvsTSQRConsistencyTest) {
     
     // 验证两种方法得到的Q矩阵是否一致 (m×n矩阵)
     for (size_t i = 0; i < m * n; ++i) {
-        EXPECT_NEAR(h_Q_wy[i], h_Q_tsqr[i], 1e-8)
+        EXPECT_NEAR(h_Q_wy_mn[i], h_Q_tsqr[i], 1e-8)
             << "I-WYT Q and TSQR Q differ at position " << i
-            << ": I-WYT=" << h_Q_wy[i] << ", TSQR=" << h_Q_tsqr[i];
+            << ": I-WYT=" << h_Q_wy_mn[i] << ", TSQR=" << h_Q_tsqr[i];
     }
     
     // 额外验证：检查两个Q矩阵作用于原矩阵是否得到相同的R (n×n上三角矩阵)
@@ -275,7 +275,7 @@ TEST_F(SY2SBWYConstructionTest, IWYTvsTSQRConsistencyTest) {
         for (size_t j = 0; j < n; ++j) {
             double sum_wy = 0.0;
             for (size_t k = 0; k < m; ++k) {
-                sum_wy += h_Q_wy[k + i * m] * h_A_host[k + j * m];
+                sum_wy += h_Q_wy_mn[k + i * m] * h_A_host[k + j * m];
             }
             h_R_wy[i + j * n] = sum_wy;
         }
