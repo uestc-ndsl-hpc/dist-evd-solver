@@ -40,6 +40,19 @@ struct identity_minus_A_functor {
 };
 
 template <typename T>
+void computeWfromOriWY(common::CublasHandle& handle, size_t n, size_t b,
+                       thrust::device_ptr<T> W, size_t ldw,
+                       thrust::device_ptr<T> Y, size_t ldy) {
+    auto work = thrust::device_vector<T>(n * b);
+    for (auto i = 2 * b; i <= n; i += b) {
+        matrix_ops::gemm(handle, i - b, b, n, (T)1.f, Y, ldy, true,
+                         W + (i - b) * ldw, ldw, false, (T)0.f, work.data(), n);
+        matrix_ops::gemm(handle, n, b, i - b, (T)-1.f, W, ldw, false,
+                         work.data(), n, false, (T)1.f, W + (i - b) * ldw, ldw);
+    }
+}
+
+template <typename T>
 class Sy2sbTest : public ::testing::Test {
    protected:
     void SetUp() override { handle_ = common::CublasHandle(); }
@@ -51,21 +64,12 @@ class Sy2sbTest : public ::testing::Test {
         run_sy2sb_test(n, A, nb, b);
     }
 
-    void run_sy2sb_test(size_t n, bool sequence, size_t nb = 128,
-                        size_t b = 32) {
-        auto A = thrust::device_vector<T>(n * n, 0);
-        if (sequence) {
-            thrust::sequence(thrust::device, A.begin(), A.end());
-        }
-        run_sy2sb_test(n, A, nb, b);
-    }
-
     void run_sy2sb_test(size_t n, thrust::device_vector<T>& A, size_t nb = 128,
                         size_t b = 32) {
         // auto A = matrix_ops::create_symmetric_random<T>(n);
         auto lda = n, ldy = n, ldw = n;
 
-        matrix_ops::print(A, n, "original A");
+        auto A_ori = A;
 
         thrust::device_vector<T> d_Y(n * n, (T)0.0f);
         thrust::device_vector<T> d_W(n * n, (T)0.0f);
@@ -74,26 +78,26 @@ class Sy2sbTest : public ::testing::Test {
                                              d_Y.data(), ldy, d_W.data(), ldw,
                                              nb, b));
 
-        matrix_ops::print(A, n, "A after sy2sb");
-
-        matrix_ops::print(d_Y, n, "Y");
-        matrix_ops::print(d_W, n, "W");
+        // compute W from oriW
+        computeWfromOriWY(handle_, n, b, d_W.data(), ldw, d_Y.data(), ldy);
 
         // Q  = I - WYT QTBQ = A  QTQ = I
         auto transformation_matrix = thrust::device_vector<T>(n * n, (T)0.0f);
         matrix_ops::gemm(handle_, n, n, n, (T)1.0f, d_W.data(), n, false,
-                         d_Y.data(), n, true, (T)0.0f, transformation_matrix.data(), n);
+                         d_Y.data(), n, true, (T)0.0f,
+                         transformation_matrix.data(), n);
         auto transformation_ptr = transformation_matrix.data();
         thrust::transform(
             thrust::device,
             thrust::make_zip_iterator(thrust::make_tuple(
                 transformation_ptr, thrust::counting_iterator<size_t>(0))),
-            thrust::make_zip_iterator(thrust::make_tuple(
-                transformation_ptr + n * n, thrust::counting_iterator<size_t>(n * n))),
+            thrust::make_zip_iterator(
+                thrust::make_tuple(transformation_ptr + n * n,
+                                   thrust::counting_iterator<size_t>(n * n))),
             transformation_ptr, identity_minus_A_functor<T>(n, n, lda));
         auto QTQ = thrust::device_vector<T>(n * n, (T)0.0f);
-        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, transformation_ptr, n, true, transformation_ptr,
-                         n, false, (T)0.0f, QTQ.data(), n);
+        matrix_ops::gemm(handle_, n, n, n, (T)1.0f, transformation_ptr, n, true,
+                         transformation_ptr, n, false, (T)0.0f, QTQ.data(), n);
         auto QTQ_ptr = QTQ.data();
         thrust::transform(
             thrust::device,
@@ -102,7 +106,7 @@ class Sy2sbTest : public ::testing::Test {
             thrust::make_zip_iterator(thrust::make_tuple(
                 QTQ_ptr + n * n, thrust::counting_iterator<size_t>(n * n))),
             QTQ_ptr, identity_minus_A_functor<T>(n, n, n));
-        matrix_ops::print(QTQ, n, "QTQ");
+
         // 计算 cublasXnrm2
         auto norm = (T)0.f;
         if constexpr (std::is_same_v<T, float>) {
@@ -110,6 +114,22 @@ class Sy2sbTest : public ::testing::Test {
             ASSERT_NEAR(norm / n, 0.0f, 1e-4);
         } else if constexpr (std::is_same_v<T, double>) {
             cublasDnrm2(handle_, n * n, QTQ.data().get(), 1, &norm);
+            ASSERT_NEAR(norm / n, 0.0, 1e-10);
+        }
+
+        // check QBQT = A_ori
+        thrust::device_vector<T> d_QBQT(n * n, (T)0.0f);
+        matrix_ops::gemm(handle_, n, n, n, (T)1.0f,
+                         transformation_matrix.data(), n, false, A.data(), n,
+                         false, (T)0.0f, d_QBQT.data(), n);
+        matrix_ops::gemm(handle_, n, n, n, (T)-1.0f, d_QBQT.data(), n, false,
+                         transformation_matrix.data(), n, true, (T)1.0f,
+                         A_ori.data(), n);
+        if constexpr (std::is_same_v<T, float>) {
+            cublasSnrm2(handle_, n * n, A_ori.data().get(), 1, &norm);
+            ASSERT_NEAR(norm / n, 0.0f, 1e-4);
+        } else if constexpr (std::is_same_v<T, double>) {
+            cublasDnrm2(handle_, n * n, A_ori.data().get(), 1, &norm);
             ASSERT_NEAR(norm / n, 0.0, 1e-10);
         }
     }
@@ -120,26 +140,14 @@ class Sy2sbTest : public ::testing::Test {
 using MyTypes = ::testing::Types<float, double>;
 TYPED_TEST_SUITE(Sy2sbTest, MyTypes);
 
-TYPED_TEST(Sy2sbTest, Big) { this->run_sy2sb_test(4096); }
+TYPED_TEST(Sy2sbTest, Big) { this->run_sy2sb_test(16384); }
+
+TYPED_TEST(Sy2sbTest, LittleBig) { this->run_sy2sb_test(4096); }
 
 TYPED_TEST(Sy2sbTest, Basic) { this->run_sy2sb_test(256); }
 
 TYPED_TEST(Sy2sbTest, Nb) { this->run_sy2sb_test(128); }
 
-TYPED_TEST(Sy2sbTest, Sequence) { this->run_sy2sb_test(256, true); }
-
 TYPED_TEST(Sy2sbTest, SmallNb) {
     this->run_sy2sb_test(64, (size_t)32, (size_t)16);
-}
-
-TYPED_TEST(Sy2sbTest, SmallNbSequence) {
-    this->run_sy2sb_test(64, true, (size_t)32, (size_t)16);
-}
-
-TYPED_TEST(Sy2sbTest, SmallNequalNbSequence) {
-    this->run_sy2sb_test(64, true, (size_t)64, (size_t)32);
-}
-
-TYPED_TEST(Sy2sbTest, BasicSequence) {
-    this->run_sy2sb_test(256, true);
 }

@@ -113,15 +113,11 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                                 T>(panel_ptr, lda, panel_Y_ptr, ldy, panel_m,
                                    panel_n);
 
-        // print W && Y for debug
-        matrix_ops::print(panel_W_ptr, panel_m, panel_n, ldw, "panel_W_ptr");
-        matrix_ops::print(panel_Y_ptr, panel_n, panel_n, ldy, "panel_Y_ptr");
-
         // copy panelR data to panel (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
                                    panel_n);
-        
+
         // update A by ZY mode
         // first panel process
 
@@ -163,7 +159,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                              panel_Z_ptr, ldz);
             // panel_tmp = panel_w^T * panel_z
             matrix_ops::gemm(cublasHandle, b, b, panel_m, (T)1, panel_W_ptr,
-                             ldw, true, panel_Z_ptr, ldz, false, T(0), work_ptr,
+                             ldw, true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
                              ldwork);
             // panel_z = panel_z - 0.5 * panel_y * panel_w^T * panel_z
             matrix_ops::gemm(cublasHandle, panel_m, b, b, (T)(-0.5),
@@ -199,8 +195,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
         sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
-
-    thrust::fill(Z, Z + n * nb, (T)0);
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,
@@ -249,7 +243,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     auto ldz = n;
 
     // tmp work space for gemm
-    auto work = thrust::device_vector<T>(nb * nb);
+    auto work = thrust::device_vector<T>(nb * nb, (T)0);
     auto ldwork = nb;
 
     internal::sy2sb_recrusive(handle, cusolverHandle, n, A_inout, lda, Y_inout,
