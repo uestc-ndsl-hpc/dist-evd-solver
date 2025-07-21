@@ -6,6 +6,8 @@
 #include "internal/sy2sb/sy2sb_panelqr.cuh"
 #include "matrix_ops.cuh"
 
+#include "log.h"
+
 namespace matrix_ops {
 
 namespace internal {
@@ -246,6 +248,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     auto work = thrust::device_vector<T>(nb * nb, (T)0);
     auto ldwork = nb;
 
+    util::Logger::tic("sy2sb");
+
     internal::sy2sb_recrusive(handle, cusolverHandle, n, A_inout, lda, Y_inout,
                               ldy, W_inout, ldw, oriA_ptr, ldoA, Z_ptr, ldz,
                               R_ptr, ldr, work.data(), ldwork, nb, b);
@@ -254,6 +258,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n,
     thrust::for_each(thrust::make_counting_iterator<size_t>(0),
                      thrust::make_counting_iterator<size_t>(n * n),
                      internal::make_symmetric_functor<T>(A_inout, n, lda));
+
+    util::Logger::toc("sy2sb");
 
     return;
 }
