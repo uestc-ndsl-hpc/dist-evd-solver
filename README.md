@@ -4,7 +4,7 @@
 
 `dist-evd-solver` is a high-performance distributed eigenvalue decomposition (EVD) solver implemented using CUDA and the NVIDIA HPC SDK.
 
-This project aims to explore and implement efficient solutions for large-scale dense symmetric eigenvalue problems, especially on modern GPU accelerators. Currently, it primarily implements the first stage of the two-stage method, which transforms a symmetric matrix into a band-diagonal matrix (`Symmetric to Band-diagonal`) using block Householder transformations.
+This project aims to explore and implement efficient solutions for large-scale dense symmetric eigenvalue problems, especially on modern GPU accelerators. Currently, it primarily implements the first stage of the two-stage method, which transforms a symmetric matrix into a band-diagonal matrix (`Symmetric to Band-diagonal`) using block Householder transformations. The core algorithm is `sy2sb`, which internally utilizes operations like TSQR (`Tall Skinny QR`) and `syr2k` (Symmetric Rank-2k Update).
 
 ## Dependencies
 
@@ -78,12 +78,15 @@ Submit the job using the `sbatch run-evd-h100.sbatch` command. Log files will be
 
 The executable `dist-evd-solver` supports the following command-line arguments:
 
-| Argument      | Description                                           | Example     |
-|---------------|-------------------------------------------------------|-------------|
-| `--float`     | Use single-precision floating-point (float) for calculations; default is double-precision. | `--float`   |
-| `-m=<value>`  | Specify the dimension of the input square matrix (M x M). | `-m=65536`  |
-| `-n=<value>`  | Specify the block size used in the computation.       | `-n=32`     |
-| `-t`, `--test`| Run in test or timing mode.                           | `-t`        |
+| Argument           | Description                                                                  | Example     |
+| ------------------ | ---------------------------------------------------------------------------- | ----------- |
+| `--float`          | Use single-precision floating-point (float) for calculations (default).      | `--float`   |
+| `--double`         | Use double-precision floating-point (double) for calculations.               | `--double`  |
+| `-n, --size=<value>` | Specify the dimension of the input square matrix (N x N).                    | `-n=4096`   |
+| `-m=<value>`       | Specify the row dimension of the input matrix (M x N), defaults to N.        | `-m=8192`   |
+| `-t, --time`       | Run in timing mode, enabling performance timers for key operations.          | `-t`        |
+| `--validate`       | Run validation checks on the results.                                        | `--validate`|
+| `-v, --verbose`    | Enable verbose logging for detailed output.                                  | `-v`        |
 
 **Note**: For the specific behavior of the arguments, please refer to the implementation in `src/main.cu`.
 
@@ -98,8 +101,27 @@ The executable `dist-evd-solver` supports the following command-line arguments:
 ├── log/                # Runtime log directory
 ├── src/                # Source code directory
 │   ├── include/        # Header files
-│   ├── matrix_ops/     # Matrix operations implementation
+│   ├── matrix_ops/     # Matrix operations implementation (sy2sb, tsqr, syr2k, etc.)
 │   ├── workflow/       # Core algorithm workflow
 │   └── main.cu         # Main program entry point
 └── *.sbatch            # Slurm job script examples
 ```
+
+## Development Log & TODO
+
+### 2025.7.21
+
+- finished the version of single-gpu sy2sb
+
+### 2025.7.14
+
+- Added `sy2sb` workflow and its recursive implementation.
+- Implemented the basic framework for `sy2sb` and the calling logic for `panelQR`.
+
+### 2025.7.10
+
+- Ported the single-GPU version of the `tsqr` operation.
+- **TODO**:
+  - Printing matrices with a leading dimension (lda) is not yet compatible.
+  - Some data copies do not handle `lda` correctly; considering wrapping `cudaMemcpy2D` similar to `cublasSetMatrix`.
+  - `sy2sb` is not yet fully compatible with all scenarios.
