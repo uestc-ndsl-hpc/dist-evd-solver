@@ -53,6 +53,7 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/matrix_ops_gemm.cu
     src/matrix_ops/matrix_ops_syr2k.cu
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
+    src/matrix_ops/dist/matrix_ops_dist_sy2sb.cu
 )
 
 target_include_directories(dist-evd-solver-lib
@@ -76,6 +77,7 @@ target_link_libraries(dist-evd-solver-lib
 add_executable(dist-evd-solver
     src/main.cu
     src/workflow/workflow_sy2sb.cu
+    src/workflow/workflow_sy2sb_dist.cu
 )
 
 target_link_libraries(dist-evd-solver

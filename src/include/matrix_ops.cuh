@@ -82,6 +82,32 @@ void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
                  size_t n);
 
 /**
+ * @brief print matrix for row = m, col = n, and the input is host ptr (column
+ * major and lda provided)
+ * 
+ * @tparam T type of the matrix elements
+ * @param data host ptr
+ * @param m number of rows
+ * @param n number of columns
+ * @param lda leading dimension of the matrix
+ * @param title title of the matrix
+ */
+template <typename T>
+void print(T* data, size_t m, size_t n, size_t lda, const std::string& title);
+
+/**
+ * @brief print matrix for row = m, col = n, and the input is host ptr
+ * 
+ * @tparam T 
+ * @param data host ptr
+ * @param m number of rows
+ * @param n number of columns
+ * @param title title of the matrix
+ */
+template <typename T>
+void print(T* data, size_t m, size_t n, const std::string& title);
+
+/**
  * @brief print matrix for row = col = n (column major)
  *
  * @tparam T
