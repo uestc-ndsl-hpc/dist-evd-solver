@@ -112,3 +112,17 @@ target_link_libraries(gpu_handle_wrappers_test
 )
 
 add_test(NAME gpu_handle_wrappers_test COMMAND gpu_handle_wrappers_test)
+
+add_executable(gpu_aware_test env/gpu_aware.cu)
+
+target_link_libraries(gpu_aware_test PRIVATE NVHPC::CUDART)
+
+add_executable(single_gpu_sy2sb
+    env/single_gpu_sy2sb.cu
+    ${CMAKE_SOURCE_DIR}/src/workflow/workflow_sy2sb.cu
+)
+
+target_link_libraries(single_gpu_sy2sb
+    PRIVATE
+        dist-evd-solver-lib
+)

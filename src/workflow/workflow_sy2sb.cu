@@ -43,14 +43,14 @@ void run_workflow_sy2sb(size_t n, bool validate) {
     }
     util::Logger::println("--- Running Sy2Sb Workflow ---");
     // 1. Generate a random symmetric matrix
-    auto A = matrix_ops::create_symmetric_random<T>(n);
+    auto A = matrix_ops::create_symmetric_random<T>(n, true);
 
     // 2. Run the workflow
     auto handle = common::CublasHandle();
     auto Y = thrust::device_vector<T>(n * n);
     auto W = thrust::device_vector<T>(n * n);
 
-    matrix_ops::sy2sb(handle, n, A.data(), n, Y.data(), n, W.data(), n);
+    matrix_ops::sy2sb(handle, n, A.data(), n, Y.data(), n, W.data(), n, 32, 16);
 
     // 3. Validate the result
     if (util::Logger::is_verbose() && n <= 128) {

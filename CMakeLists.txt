@@ -59,6 +59,7 @@ add_library(dist-evd-solver-lib
 target_include_directories(dist-evd-solver-lib
     PUBLIC
         src/include
+        src/include/common
 )
 
 target_link_libraries(dist-evd-solver-lib
@@ -76,7 +77,7 @@ target_link_libraries(dist-evd-solver-lib
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver
     src/main.cu
-    src/workflow/workflow_sy2sb.cu
+    # src/workflow/workflow_sy2sb.cu
     src/workflow/workflow_sy2sb_dist.cu
 )
 

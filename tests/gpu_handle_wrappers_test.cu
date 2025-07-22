@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../src/include/gpu_handle_wrappers.h"
+#include "gpu_handle_wrappers.h"
 
 using namespace common;
 

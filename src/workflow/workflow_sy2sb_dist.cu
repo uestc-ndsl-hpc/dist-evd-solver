@@ -6,7 +6,8 @@
 
 template <typename T>
 void run_workflow_sy2sb_dist(size_t n, bool validate) {
-    // TODO: replace Warm-up cuBLAS to avoid initialization overhead in timing with cublasXt
+    // TODO: replace Warm-up cuBLAS to avoid initialization overhead in timing
+    // with cublasXt
     {
         if (util::Logger::is_verbose() && n <= 128) {
             util::Logger::println("--- Performing cuBLAS warm-up ---");
@@ -44,21 +45,26 @@ void run_workflow_sy2sb_dist(size_t n, bool validate) {
     }
     util::Logger::println("--- Running Sy2Sb Workflow ---");
     // 1. Generate a random symmetric matrix
-    auto A_d = matrix_ops::create_symmetric_random<T>(n);
+
+    auto A_h = thrust::host_vector<T>(n * n);
 
     // 2. Run the workflow
     auto handle = common::CublasHandle();
+    {
+        auto A_d = matrix_ops::create_symmetric_random<T>(n, true);
+        thrust::copy(A_d.begin(), A_d.end(), A_h.begin());
+    }
 
-    auto A_h = thrust::host_vector<T>(A_d.begin(), A_d.end());
     auto Y_h = thrust::host_vector<T>(n * n);
     auto W_h = thrust::host_vector<T>(n * n);
 
     matrix_ops::dist::sy2sb(handle, n, A_h.data(), n, W_h.data(), n, Y_h.data(),
-                            n);
+                            n, 32, 16, 2);
 
-    // 3. Validate the result
     if (util::Logger::is_verbose() && n <= 128) {
-        matrix_ops::print(A_d, n, "sy2sb result");
+        matrix_ops::print(A_h.data(), n, n, n, "A");
+        matrix_ops::print(W_h.data(), n, n, n, "W");
+        matrix_ops::print(Y_h.data(), n, n, n, "Y");
     }
 }
 
