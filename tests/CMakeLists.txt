@@ -102,4 +102,13 @@ target_link_libraries(sy2sb_WY_construction_test
 
 target_include_directories(sy2sb_WY_construction_test PRIVATE ${CMAKE_SOURCE_DIR}/src/matrix_ops/internal/sy2sb)
 
-add_test(NAME sy2sb_WY_construction_test COMMAND sy2sb_WY_construction_test)
+add_executable(gpu_handle_wrappers_test gpu_handle_wrappers_test.cu)
+
+target_link_libraries(gpu_handle_wrappers_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_test(NAME gpu_handle_wrappers_test COMMAND gpu_handle_wrappers_test)
