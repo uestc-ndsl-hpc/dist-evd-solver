@@ -60,6 +60,7 @@ target_include_directories(dist-evd-solver-lib
     PUBLIC
         src/include
         src/include/common
+        src/include/matrix_ops/internal/sy2sb
 )
 
 target_link_libraries(dist-evd-solver-lib
