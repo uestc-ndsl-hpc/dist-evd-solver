@@ -38,8 +38,10 @@ void sy2sb_recrusive(const common::CublasHandle& handle,
                      std::vector<thrust::device_vector<T>>& gpu_oriA,
                      std::vector<thrust::device_vector<T>>& gpu_W,
                      std::vector<thrust::device_vector<T>>& gpu_Y,
-                     std::vector<thrust::device_vector<T>>& gpu_R) {
-    if (n % nb != 0) {
+                     std::vector<thrust::device_vector<T>>& gpu_R,
+                     std::vector<thrust::device_vector<T>>& gpu_Z,
+                     std::vector<thrust::device_vector<T>>& gpu_work) {
+    if (n % nb % gpu_num != 0) {
         throw std::runtime_error(
             "n % nb != 0 we don't support non-divisible size");
     }
@@ -60,6 +62,7 @@ void sy2sb_recrusive(const common::CublasHandle& handle,
             gpu_oriA[gpu_index].data() + offset - gpu_start[gpu_index];
         auto panel_R_ptr =
             gpu_R[gpu_index].data() + offset - gpu_start[gpu_index];
+        auto panel_work_ptr = gpu_work[gpu_index].data();
 
         matrix_ops::internal::sy2sb::panelQR(
             handle, cusolverHandle, panel_m, panel_n, panel_ptr, lda,
@@ -75,7 +78,9 @@ void sy2sb_recrusive(const common::CublasHandle& handle,
                                 T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
                                    panel_n);
 
-        
+        offset = i + i * lda;
+        auto panel_OriA_ptr =
+            gpu_oriA[gpu_index].data() + offset - gpu_start[gpu_index];
     }
 }
 
@@ -115,6 +120,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::vector<thrust::device_vector<T>> gpu_W(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_Y(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_R(gpu_num);
+    std::vector<thrust::device_vector<T>> gpu_Z(gpu_num);
+    std::vector<thrust::device_vector<T>> gpu_work(gpu_num);
     for (auto i = (size_t)0; i < gpu_num; i++) {
         fmt::println("== set gpu {} ==", i);
         cudaSetDevice(i);
@@ -123,6 +130,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         gpu_W[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_Y[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_R[i] = thrust::device_vector<T>(occupy_each_gpu * n);
+        gpu_Z[i] = thrust::device_vector<T>(n * nb);
+        gpu_work[i] = thrust::device_vector<T>(nb * nb);
         thrust::copy(A + gpu_start[i], A + gpu_start[i] + occupy_each_gpu * n,
                      gpu_A[i].begin());
         thrust::copy(oriA.data() + gpu_start[i],
@@ -139,7 +148,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
 
     internal::sy2sb_recrusive(handle, cusolverHandle, n, A, lda, Y, ldy, W, ldw,
                               R_h.data(), ldr, nb, b, gpu_num, occupy_each_gpu,
-                              gpu_start, gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R);
+                              gpu_start, gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R,
+                              gpu_Z, gpu_work);
 
     return;
 }
