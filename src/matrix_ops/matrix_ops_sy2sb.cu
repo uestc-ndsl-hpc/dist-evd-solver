@@ -3,7 +3,7 @@
 #include <cstddef>
 
 #include "gpu_handle_wrappers.h"
-#include "internal/sy2sb/sy2sb_panelqr.cuh"
+#include "sy2sb_panelqr.cuh"
 #include "matrix_ops.cuh"
 
 #include "log.h"
