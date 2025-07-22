@@ -29,10 +29,10 @@ size_t computeGPUIndex4Panel(size_t offset, std::vector<size_t>& gpu_start) {
 }
 
 template <typename T>
-void sy2sb_recrusive(const common::CublasHandle& handle,
+void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                      const common::CusolverDnHandle& cusolverHandle, size_t n,
-                     T* A, size_t lda, T* Y, size_t ldy, T* W, size_t ldw, T* R,
-                     size_t ldr, size_t nb, size_t b, size_t gpu_num,
+                     T* A_host, size_t lda, T* Y_host, size_t ldy, T* W_host,
+                     size_t ldw, size_t nb, size_t b, size_t gpu_num,
                      size_t occupy_each_gpu, std::vector<size_t>& gpu_start,
                      std::vector<thrust::device_vector<T>>& gpu_A,
                      std::vector<thrust::device_vector<T>>& gpu_oriA,
@@ -46,27 +46,31 @@ void sy2sb_recrusive(const common::CublasHandle& handle,
             "n % nb != 0 we don't support non-divisible size");
     }
 
+    auto recrusive_offset = recrusive_depth * (nb + nb * n);
+    auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
+    cudaSetDevice(gpu_index);
+    auto recrusive_offset_r = nb * recrusive_depth;
+    auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
+    auto oriA = gpu_oriA[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
+    auto W = gpu_W[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
+    auto Y = gpu_Y[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
+    auto R = gpu_R[gpu_index].data() + recrusive_offset_r;
+    auto Z = gpu_Z[gpu_index].data();
+    auto ldz = n;
+    auto work_ptr = gpu_work[gpu_index].data();
+
     for (auto i = b; i <= nb && i < n; i += b) {
         auto panel_m = n - i;
         auto panel_n = b;
-        auto offset = i + (i - b) * lda;
-        auto gpu_index = computeGPUIndex4Panel(offset, gpu_start);
-        cudaSetDevice(gpu_index);
-        auto panel_ptr =
-            gpu_A[gpu_index].data() + offset - gpu_start[gpu_index];
-        auto panel_W_ptr =
-            gpu_W[gpu_index].data() + offset - gpu_start[gpu_index];
-        auto panel_Y_ptr =
-            gpu_Y[gpu_index].data() + offset - gpu_start[gpu_index];
-        auto panel_oriA_ptr =
-            gpu_oriA[gpu_index].data() + offset - gpu_start[gpu_index];
-        auto panel_R_ptr =
-            gpu_R[gpu_index].data() + offset - gpu_start[gpu_index];
-        auto panel_work_ptr = gpu_work[gpu_index].data();
+        auto panel_ptr = A + i + (i - b) * lda;
+
+        auto panel_W_ptr = W + i + (i - b) * ldw;
+        auto panel_Y_ptr = Y + i + (i - b) * ldy;
+        auto panel_Z_ptr = Z + i + (i - b) * nb;
 
         matrix_ops::internal::sy2sb::panelQR(
             handle, cusolverHandle, panel_m, panel_n, panel_ptr, lda,
-            panel_R_ptr, ldr, panel_W_ptr, ldw);
+            R, n, panel_W_ptr, ldw);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -75,15 +79,11 @@ void sy2sb_recrusive(const common::CublasHandle& handle,
 
         // copy panelR data to panel (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
+                                T>(R, n, panel_ptr, lda, panel_m,
                                    panel_n);
 
-        offset = i + i * lda;
-        auto panel_OriA_ptr =
-            gpu_oriA[gpu_index].data() + offset - gpu_start[gpu_index];
     }
 }
-
 }  // namespace internal
 
 template <typename T>
@@ -94,9 +94,6 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     auto cusolverHandle = common::CusolverDnHandle();
 
     auto oriA = thrust::host_vector<T>(n * n);
-
-    auto R_h = thrust::host_vector<T>(n * n);
-    auto ldr = n;
 
     thrust::copy(A, A + n * n, oriA.begin());
 
@@ -115,6 +112,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         cudaSetDevice(i);
         cudaStreamCreate(&gpu_stream[i]);
     }
+
     std::vector<thrust::device_vector<T>> gpu_A(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_oriA(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_W(gpu_num);
@@ -122,6 +120,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::vector<thrust::device_vector<T>> gpu_R(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_Z(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_work(gpu_num);
+
     for (auto i = (size_t)0; i < gpu_num; i++) {
         fmt::println("== set gpu {} ==", i);
         cudaSetDevice(i);
@@ -129,7 +128,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         gpu_oriA[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_W[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_Y[i] = thrust::device_vector<T>(occupy_each_gpu * n);
-        gpu_R[i] = thrust::device_vector<T>(occupy_each_gpu * n);
+        gpu_R[i] = thrust::device_vector<T>(n * nb);
         gpu_Z[i] = thrust::device_vector<T>(n * nb);
         gpu_work[i] = thrust::device_vector<T>(nb * nb);
         thrust::copy(A + gpu_start[i], A + gpu_start[i] + occupy_each_gpu * n,
@@ -146,10 +145,10 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         matrix_ops::print(gpu_oriA[i].data(), n, occupy_each_gpu, title_oriA);
     }
 
-    internal::sy2sb_recrusive(handle, cusolverHandle, n, A, lda, Y, ldy, W, ldw,
-                              R_h.data(), ldr, nb, b, gpu_num, occupy_each_gpu,
-                              gpu_start, gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R,
-                              gpu_Z, gpu_work);
+    internal::sy2sb_recrusive(0, handle, cusolverHandle, n, A, lda, Y, ldy, W,
+                              ldw, nb, b, gpu_num, occupy_each_gpu, gpu_start,
+                              gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R, gpu_Z,
+                              gpu_work);
 
     return;
 }
