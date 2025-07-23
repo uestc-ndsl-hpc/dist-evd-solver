@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
+#include "gpu_handle_wrappers.h"
 #include "log.h"
 #include "matrix_ops.cuh"
 #include "matrix_ops_dist.cuh"
@@ -30,7 +32,7 @@ size_t computeGPUIndex4Panel(size_t offset, std::vector<size_t>& gpu_start) {
 
 template <typename T>
 void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
-                     const common::CusolverDnHandle& cusolverHandle, size_t n,
+                     const common::CusolverDnHandle& cusolverHandle, const common::CublasXtHandle& cublasXtHandle, size_t n,
                      T* A_host, size_t lda, T* Y_host, size_t ldy, T* W_host,
                      size_t ldw, size_t nb, size_t b, size_t gpu_num,
                      size_t occupy_each_gpu, std::vector<size_t>& gpu_start,
@@ -46,7 +48,7 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     cudaSetDevice(gpu_index);
     auto recrusive_offset_finished = nb * recrusive_depth;
     auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
-    
+
     auto oriA =
         gpu_oriA[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
     auto W = gpu_W[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
@@ -84,9 +86,12 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         auto panel_OriA_ptr = oriA + i * lda + i;
         if (i == b) {
             // TODO: panel_z = panel_oa * panel_w by cublasXt
-            matrix_ops::gemm(handle, panel_m, b, panel_m, (T)1, panel_OriA_ptr,
-                             lda, false, panel_W_ptr, ldw, false, (T)0,
-                             panel_Z_ptr, ldz);
+            if constexpr (std::is_same_v<T, float>) {
+
+            }
+            // matrix_ops::gemm(handle, panel_m, b, panel_m, (T)1, panel_OriA_ptr,
+            //                  lda, false, panel_W_ptr, ldw, false, (T)0,
+            //                  panel_Z_ptr, ldz);
             // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
                              true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
@@ -100,6 +105,8 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             // matrix_ops::gemm(handle, panel_m, b, panel_m, (T)1,
             //                  panel_OriA_ptr, lda, false, panel_W_ptr, ldw,
             //                  false, (T)0, panel_Z_ptr, ldz);
+
+
             // panel_tmp = panel_z^T * panel_w
             matrix_ops::gemm(handle, i - b, b, panel_m, (T)1, Z + i, ldz, true,
                              panel_W_ptr, ldw, false, (T)0, work_ptr, ldwork);
@@ -205,7 +212,9 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
             "n % nb != 0 we don't support non-divisible size");
     }
 
-    internal::sy2sb_recrusive(0, handle, cusolverHandle, n, A, lda, Y, ldy, W,
+    common::CublasXtHandle cublasXtHandle;
+
+    internal::sy2sb_recrusive(0, handle, cusolverHandle, cublasXtHandle, n, A, lda, Y, ldy, W,
                               ldw, nb, b, gpu_num, occupy_each_gpu, gpu_start,
                               gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R, gpu_Z,
                               gpu_work);

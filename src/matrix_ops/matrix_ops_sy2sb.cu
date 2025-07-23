@@ -194,6 +194,8 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
         sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
+    
+    
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,

@@ -126,3 +126,12 @@ target_link_libraries(single_gpu_sy2sb
     PRIVATE
         dist-evd-solver-lib
 )
+
+add_executable(multi_gpu_cublasxt
+    env/multi_gpu_cublasxt.cu
+)
+
+target_link_libraries(multi_gpu_cublasxt
+    PRIVATE
+        dist-evd-solver-lib
+)
