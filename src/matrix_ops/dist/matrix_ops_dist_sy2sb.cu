@@ -73,6 +73,10 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
     cudaSetDevice(gpu_index);
+    util::Logger::println(
+        "recrusive_depth {} : gpu_index {} block_idx {} gpu_start {}",
+        recrusive_depth, gpu_index, recrusive_offset - gpu_start[gpu_index],
+        gpu_start[gpu_index]);
     auto recrusive_offset_finished = nb * recrusive_depth;
     auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
 
@@ -122,17 +126,27 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             if constexpr (std::is_same_v<T, float>) {
                 float alpha = 1.0f;
                 float beta = 0.0f;
-                cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
-                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
-                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
-                              ldz);
+                auto status = cublasXtSgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
+                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
+                    ldw, &beta, panel_Z_ptr.get(), ldz);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtSgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
             } else {
                 double alpha = 1.0;
                 double beta = 0.0;
-                cublasXtDgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
-                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
-                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
-                              ldz);
+                auto status = cublasXtDgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
+                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
+                    ldw, &beta, panel_Z_ptr.get(), ldz);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtDgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
             }
             // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
@@ -146,17 +160,27 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             if constexpr (std::is_same_v<T, float>) {
                 float alpha = 1.0f;
                 float beta = 0.0f;
-                cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
-                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
-                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
-                              ldz);
+                auto status = cublasXtSgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
+                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
+                    ldw, &beta, panel_Z_ptr.get(), ldz);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtSgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
             } else {
                 double alpha = 1.0;
                 double beta = 0.0;
-                cublasXtDgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
-                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
-                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
-                              ldz);
+                auto status = cublasXtDgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
+                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
+                    ldw, &beta, panel_Z_ptr.get(), ldz);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtDgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
             }
             // panel_tmp = panel_z^T * panel_w
             matrix_ops::gemm(handle, i - b, b, panel_m, (T)1, Z + i, ldz, true,
@@ -206,17 +230,25 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     if constexpr (std::is_same_v<T, float>) {
         float alpha = -1.0f;
         float beta = 1.0f;
-        cublasXtSsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-                       n - recrusive_offset_finished - nb, nb, &alpha,
-                       Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
-                       tail_matrix_host_ptr, lda);
+        auto status = cublasXtSsyr2k(
+            cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            n - recrusive_offset_finished - nb, nb, &alpha, Y.get() + nb, ldy,
+            Z.get() + nb, ldz, &beta, tail_matrix_host_ptr, lda);
+        if (status != CUBLAS_STATUS_SUCCESS) {
+            auto error_msg = fmt::format("cublasXtSsyr2k failed: {}", status);
+            throw std::runtime_error(error_msg);
+        }
     } else {
         double alpha = -1.0;
         double beta = 1.0;
-        cublasXtDsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-                       n - recrusive_offset_finished - nb, nb, &alpha,
-                       Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
-                       tail_matrix_host_ptr, lda);
+        auto status = cublasXtDsyr2k(
+            cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+            n - recrusive_offset_finished - nb, nb, &alpha, Y.get() + nb, ldy,
+            Z.get() + nb, ldz, &beta, tail_matrix_host_ptr, lda);
+        if (status != CUBLAS_STATUS_SUCCESS) {
+            auto error_msg = fmt::format("cublasXtDsyr2k failed: {}", status);
+            throw std::runtime_error(error_msg);
+        }
     }
 
     util::Logger::println("recrusive_depth {} : finished syr2k update",

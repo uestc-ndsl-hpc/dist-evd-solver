@@ -21,11 +21,15 @@ void gemm(const common::CublasHandle& handle, size_t m, size_t n,
         static_assert(std::is_same_v<T, float> || std::is_same_v<T, double>,
                       "matrix_gemm only supports float and double");
     }
-    cublasGemmEx(handle, cublas_op_a, cublas_op_b, m, n, k, &alpha,
+    auto status = cublasGemmEx(handle, cublas_op_a, cublas_op_b, m, n, k, &alpha,
                  thrust::raw_pointer_cast(A), cuda_data_type, lda,
                  thrust::raw_pointer_cast(B), cuda_data_type, ldb, &beta,
                  thrust::raw_pointer_cast(C), cuda_data_type, ldc,
                  cublas_compute_type, CUBLAS_GEMM_DEFAULT);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        auto error_msg = fmt::format("cublasGemmEx failed: {}", status);
+        throw std::runtime_error(error_msg);
+    }
 }
 
 template <typename T>
