@@ -3,6 +3,8 @@
 #include "log.h"
 #include "matrix_ops.cuh"
 
+#include <numeric>
+
 int main() {
     util::Logger::init_timer(true);
 
@@ -39,9 +41,10 @@ int main() {
         common::CublasXtHandle cublasXtHandle;
 
         int gpu_num = 1;
-        int xt_devices[1] = {0};
+        std::vector<int> xt_devices(gpu_num);
+        std::iota(xt_devices.begin(), xt_devices.end(), 0);
 
-        if (cublasXtDeviceSelect(cublasXtHandle, gpu_num, xt_devices) !=
+        if (cublasXtDeviceSelect(cublasXtHandle, gpu_num, xt_devices.data()) !=
             CUBLAS_STATUS_SUCCESS) {
             throw std::runtime_error("cublasXtDeviceSelect failed");
         } else {

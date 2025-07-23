@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <numeric>
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
@@ -15,6 +16,31 @@
 namespace matrix_ops {
 namespace dist {
 namespace internal {
+
+/**
+ * @brief Functor to copy the lower triangular part of a matrix to the upper
+ * triangular part.
+ *
+ * @tparam T Data type of the matrix elements.
+ */
+template <typename T>
+struct make_symmetric_functor {
+    thrust::device_ptr<T> A_;
+    size_t n_;
+    size_t lda_;
+
+    make_symmetric_functor(thrust::device_ptr<T> A, size_t n, size_t lda)
+        : A_(A), n_(n), lda_(lda) {}
+
+    __device__ void operator()(const size_t& k) const {
+        size_t j = k % n_;  // row
+        size_t i = k / n_;  // col
+        if (j < i) {
+            A_[j + i * lda_] = A_[i + j * lda_];
+        }
+    }
+};
+
 /**
  * @brief compute the gpu index for a panel
  *
@@ -32,7 +58,8 @@ size_t computeGPUIndex4Panel(size_t offset, std::vector<size_t>& gpu_start) {
 
 template <typename T>
 void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
-                     const common::CusolverDnHandle& cusolverHandle, const common::CublasXtHandle& cublasXtHandle, size_t n,
+                     const common::CusolverDnHandle& cusolverHandle,
+                     const common::CublasXtHandle& cublasXtHandle, size_t n,
                      T* A_host, size_t lda, T* Y_host, size_t ldy, T* W_host,
                      size_t ldw, size_t nb, size_t b, size_t gpu_num,
                      size_t occupy_each_gpu, std::vector<size_t>& gpu_start,
@@ -83,15 +110,23 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
 
         // update A by ZY mode
         // first panel process
-        auto panel_OriA_ptr = oriA + i * lda + i;
+        auto panel_OriA_ptr_xt = A_host + recrusive_offset + i * lda + i;
         if (i == b) {
-            // TODO: panel_z = panel_oa * panel_w by cublasXt
             if constexpr (std::is_same_v<T, float>) {
-
+                float alpha = 1.0f;
+                float beta = 0.0f;
+                cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
+                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
+                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
+                              ldz);
+            } else {
+                double alpha = 1.0;
+                double beta = 0.0;
+                cublasXtDgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
+                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
+                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
+                              ldz);
             }
-            // matrix_ops::gemm(handle, panel_m, b, panel_m, (T)1, panel_OriA_ptr,
-            //                  lda, false, panel_W_ptr, ldw, false, (T)0,
-            //                  panel_Z_ptr, ldz);
             // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
                              true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
@@ -101,12 +136,21 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                              false, work_ptr, ldwork, false, (T)1, panel_Z_ptr,
                              ldz);
         } else {
-            // TODO: panel_z = panel_oa * panel_w by cublasXt
-            // matrix_ops::gemm(handle, panel_m, b, panel_m, (T)1,
-            //                  panel_OriA_ptr, lda, false, panel_W_ptr, ldw,
-            //                  false, (T)0, panel_Z_ptr, ldz);
-
-
+            if constexpr (std::is_same_v<T, float>) {
+                float alpha = 1.0f;
+                float beta = 0.0f;
+                cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
+                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
+                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
+                              ldz);
+            } else {
+                double alpha = 1.0;
+                double beta = 0.0;
+                cublasXtDgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m,
+                              b, panel_m, &alpha, panel_OriA_ptr_xt, lda,
+                              panel_W_ptr.get(), ldw, &beta, panel_Z_ptr.get(),
+                              ldz);
+            }
             // panel_tmp = panel_z^T * panel_w
             matrix_ops::gemm(handle, i - b, b, panel_m, (T)1, Z + i, ldz, true,
                              panel_W_ptr, ldw, false, (T)0, work_ptr, ldwork);
@@ -142,9 +186,57 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     // recursive exit
     if (n <= nb) return;
 
-    // TODO: execute syr2k
-    // matrix_ops::syr2k(handle, n - nb, nb, (T)(-1), Y + nb, ldy, Z + nb, ldz,
-    //                   (T)1, oriA + nb * lda + nb, lda);
+    auto tail_matrix_host_ptr =
+        A_host + (recrusive_depth + 1) * (nb + nb * lda);
+
+    if constexpr (std::is_same_v<T, float>) {
+        float alpha = 1.0f;
+        float beta = 0.0f;
+        cublasXtSsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+                       n - nb, nb, &alpha, Y.get() + nb, ldy, Z.get() + nb, ldz,
+                       &beta, tail_matrix_host_ptr, lda);
+    } else {
+        double alpha = 1.0;
+        double beta = 0.0;
+        cublasXtDsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+                       n - nb, nb, &alpha, Y.get() + nb, ldy, Z.get() + nb, ldz,
+                       &beta, tail_matrix_host_ptr, lda);
+    }
+
+    // TODO: 待实际实现 copy Lower to Upper to build a full symmetric matrix for
+    // Z = AW the updated part
+    auto sub_matrix_n = n - nb - recrusive_offset_finished;
+    {
+        auto tmp = thrust::device_vector<T>(n * n);
+        auto sub_matrix_ptr_oA = tmp.data() + recrusive_offset + nb * lda + nb;
+        thrust::copy(A_host, A_host + n * n, tmp.begin());
+        thrust::for_each(
+            thrust::make_counting_iterator<size_t>(0),
+            thrust::make_counting_iterator<size_t>(sub_matrix_n * sub_matrix_n),
+            make_symmetric_functor<T>(sub_matrix_ptr_oA, sub_matrix_n, lda));
+        thrust::copy(tmp.begin(), tmp.end(), A_host);
+        auto A_now = thrust::host_vector<T>(n * n);
+        for (auto i = 0; i < gpu_num; i++) {
+            cudaSetDevice(i);
+            thrust::copy(gpu_A[i].begin(), gpu_A[i].end(),
+                         A_now.begin() + gpu_start[i]);
+        }
+        matrix_ops::matrix_copy<T*, T*, T>(
+            tail_matrix_host_ptr, lda,
+            A_now.data() + recrusive_offset + nb * lda + nb, lda, sub_matrix_n,
+            sub_matrix_n);
+        for (auto i = 0; i < gpu_num; i++) {
+            cudaSetDevice(i);
+            thrust::copy(A_now.begin() + gpu_start[i],
+                         A_now.begin() + gpu_start[i] + occupy_each_gpu * n,
+                         gpu_A[i].begin());
+        }
+    }
+
+    internal::sy2sb_recrusive(
+        recrusive_depth + 1, handle, cusolverHandle, cublasXtHandle, n, A_host,
+        lda, Y_host, ldy, W_host, ldw, nb, b, gpu_num, occupy_each_gpu,
+        gpu_start, gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R, gpu_Z, gpu_work);
 }
 }  // namespace internal
 
@@ -199,13 +291,6 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
                      oriA.data() + gpu_start[i] + occupy_each_gpu * n,
                      gpu_oriA[i].begin());
     }
-    for (auto i = (size_t)0; i < gpu_num; i++) {
-        cudaSetDevice(i);
-        std::string title_A = fmt::format("gpu_A_{}", i);
-        matrix_ops::print(gpu_A[i], n, occupy_each_gpu, title_A);
-        std::string title_oriA = fmt::format("gpu_oriA_{}", i);
-        matrix_ops::print(gpu_oriA[i].data(), n, occupy_each_gpu, title_oriA);
-    }
 
     if (n % nb % gpu_num != 0) {
         throw std::runtime_error(
@@ -214,10 +299,33 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
 
     common::CublasXtHandle cublasXtHandle;
 
-    internal::sy2sb_recrusive(0, handle, cusolverHandle, cublasXtHandle, n, A, lda, Y, ldy, W,
-                              ldw, nb, b, gpu_num, occupy_each_gpu, gpu_start,
-                              gpu_A, gpu_oriA, gpu_W, gpu_Y, gpu_R, gpu_Z,
-                              gpu_work);
+    std::vector<int> gpu_used_xt(gpu_num);
+    std::iota(gpu_used_xt.begin(), gpu_used_xt.end(), 0);
+    cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used_xt.data());
+
+    internal::sy2sb_recrusive(0, handle, cusolverHandle, cublasXtHandle, n, A,
+                              lda, Y, ldy, W, ldw, nb, b, gpu_num,
+                              occupy_each_gpu, gpu_start, gpu_A, gpu_oriA,
+                              gpu_W, gpu_Y, gpu_R, gpu_Z, gpu_work);
+
+    for (auto i = (size_t)0; i < gpu_num; i++) {
+        cudaSetDevice(i);
+        thrust::copy(gpu_A[i].begin(), gpu_A[i].end(), A + gpu_start[i]);
+        thrust::copy(gpu_W[i].begin(), gpu_W[i].end(), W + gpu_start[i]);
+        thrust::copy(gpu_Y[i].begin(), gpu_Y[i].end(), Y + gpu_start[i]);
+    }
+
+    {
+        // TODO: 一个对称的伪实现
+        thrust::device_vector<T> tmp(n * n);
+        thrust::copy(A, A + n * n, tmp.begin());
+        // make A_inout symmetric
+        thrust::for_each(
+            thrust::make_counting_iterator<size_t>(0),
+            thrust::make_counting_iterator<size_t>(n * n),
+            internal::make_symmetric_functor<T>(tmp.data(), n, lda));
+        thrust::copy(tmp.begin(), tmp.end(), A);
+    }
 
     return;
 }
