@@ -86,8 +86,11 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     auto work_ptr = gpu_work[gpu_index].data();
     auto ldwork = nb;
 
-    for (auto i = b; i <= nb && i < n; i += b) {
-        auto panel_m = n - i;
+    util::Logger::println("recrusive_depth {} : before dbbr update",
+                          recrusive_depth);
+
+    for (auto i = b; i <= nb && i < (n - recrusive_offset_finished); i += b) {
+        auto panel_m = n - recrusive_offset_finished - i;
         auto panel_n = b;
         auto panel_ptr = A + i + (i - b) * lda;
 
@@ -98,6 +101,9 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         matrix_ops::internal::sy2sb::panelQR(handle, cusolverHandle, panel_m,
                                              panel_n, panel_ptr, lda, R, lda,
                                              panel_W_ptr, ldw);
+
+        util::Logger::println("recrusive_depth {} : finished panelQR in panel {}",
+                              recrusive_depth, i / b);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -181,10 +187,16 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             matrix_ops::gemm(handle, panel_m, b, i, (T)(-1), Z + i, ldz, false,
                              Y + i, ldy, true, (T)1, A + i + i * lda, lda);
         }
+
+        util::Logger::println("recrusive_depth {} : finished zy update in panel {}",
+            recrusive_depth, i / b);
     }
 
+    util::Logger::println("recrusive_depth {} : finished dbbr update",
+                          recrusive_depth);
+
     // recursive exit
-    if (n <= nb) return;
+    if (n <= nb + recrusive_offset_finished) return;
 
     auto tail_matrix_host_ptr =
         A_host + (recrusive_depth + 1) * (nb + nb * lda);
@@ -193,15 +205,20 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         float alpha = 1.0f;
         float beta = 0.0f;
         cublasXtSsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-                       n - nb, nb, &alpha, Y.get() + nb, ldy, Z.get() + nb, ldz,
-                       &beta, tail_matrix_host_ptr, lda);
+                       n - recrusive_offset_finished - nb, nb, &alpha,
+                       Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
+                       tail_matrix_host_ptr, lda);
     } else {
         double alpha = 1.0;
         double beta = 0.0;
         cublasXtDsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-                       n - nb, nb, &alpha, Y.get() + nb, ldy, Z.get() + nb, ldz,
-                       &beta, tail_matrix_host_ptr, lda);
+                       n - recrusive_offset_finished - nb, nb, &alpha,
+                       Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
+                       tail_matrix_host_ptr, lda);
     }
+
+    util::Logger::println("recrusive_depth {} : finished syr2k update",
+        recrusive_depth);
 
     // TODO: 待实际实现 copy Lower to Upper to build a full symmetric matrix for
     // Z = AW the updated part
@@ -243,8 +260,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
            size_t ldy, T* W, size_t ldw, size_t nb, size_t b, size_t gpu_num) {
-    util::Logger::println("sy2sb dist");
-
     auto cusolverHandle = common::CusolverDnHandle();
 
     auto oriA = thrust::host_vector<T>(n * n);
@@ -276,7 +291,6 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::vector<thrust::device_vector<T>> gpu_work(gpu_num);
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
-        fmt::println("== set gpu {} ==", i);
         cudaSetDevice(i);
         gpu_A[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_oriA[i] = thrust::device_vector<T>(occupy_each_gpu * n);
@@ -314,6 +328,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         thrust::copy(gpu_W[i].begin(), gpu_W[i].end(), W + gpu_start[i]);
         thrust::copy(gpu_Y[i].begin(), gpu_Y[i].end(), Y + gpu_start[i]);
     }
+
+    util::Logger::println("sy2sb dist finished");
 
     {
         // TODO: 一个对称的伪实现
