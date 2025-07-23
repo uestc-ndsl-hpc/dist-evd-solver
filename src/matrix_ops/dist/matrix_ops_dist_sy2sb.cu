@@ -41,11 +41,12 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                      std::vector<thrust::device_vector<T>>& gpu_R,
                      std::vector<thrust::device_vector<T>>& gpu_Z,
                      std::vector<thrust::device_vector<T>>& gpu_work) {
-    auto recrusive_offset = recrusive_depth * (nb + nb * n);
+    auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
     cudaSetDevice(gpu_index);
     auto recrusive_offset_finished = nb * recrusive_depth;
     auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
+    
     auto oriA =
         gpu_oriA[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
     auto W = gpu_W[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
