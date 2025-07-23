@@ -102,8 +102,9 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                                              panel_n, panel_ptr, lda, R, lda,
                                              panel_W_ptr, ldw);
 
-        util::Logger::println("recrusive_depth {} : finished panelQR in panel {}",
-                              recrusive_depth, i / b);
+        util::Logger::println(
+            "recrusive_depth {} : finished panelQR in panel {}",
+            recrusive_depth, i / b);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -188,7 +189,8 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                              Y + i, ldy, true, (T)1, A + i + i * lda, lda);
         }
 
-        util::Logger::println("recrusive_depth {} : finished zy update in panel {}",
+        util::Logger::println(
+            "recrusive_depth {} : finished zy update in panel {}",
             recrusive_depth, i / b);
     }
 
@@ -202,15 +204,15 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         A_host + (recrusive_depth + 1) * (nb + nb * lda);
 
     if constexpr (std::is_same_v<T, float>) {
-        float alpha = 1.0f;
-        float beta = 0.0f;
+        float alpha = -1.0f;
+        float beta = 1.0f;
         cublasXtSsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                        n - recrusive_offset_finished - nb, nb, &alpha,
                        Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
                        tail_matrix_host_ptr, lda);
     } else {
-        double alpha = 1.0;
-        double beta = 0.0;
+        double alpha = -1.0;
+        double beta = 1.0;
         cublasXtDsyr2k(cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
                        n - recrusive_offset_finished - nb, nb, &alpha,
                        Y.get() + nb, ldy, Z.get() + nb, ldz, &beta,
@@ -218,7 +220,7 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     }
 
     util::Logger::println("recrusive_depth {} : finished syr2k update",
-        recrusive_depth);
+                          recrusive_depth);
 
     // TODO: 待实际实现 copy Lower to Upper to build a full symmetric matrix for
     // Z = AW the updated part
@@ -249,6 +251,9 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                          gpu_A[i].begin());
         }
     }
+
+    util::Logger::println("recrusive_depth {} : make symmetric update",
+                          recrusive_depth);
 
     internal::sy2sb_recrusive(
         recrusive_depth + 1, handle, cusolverHandle, cublasXtHandle, n, A_host,

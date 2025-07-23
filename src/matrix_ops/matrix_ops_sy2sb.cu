@@ -3,10 +3,9 @@
 #include <cstddef>
 
 #include "gpu_handle_wrappers.h"
-#include "sy2sb_panelqr.cuh"
-#include "matrix_ops.cuh"
-
 #include "log.h"
+#include "matrix_ops.cuh"
+#include "sy2sb_panelqr.cuh"
 
 namespace matrix_ops {
 
@@ -106,8 +105,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         // compute the panel QR
         internal::sy2sb::panelQR(cublasHandle, cusolverHandle, panel_m, panel_n,
-                                 panel_ptr, lda, R, ldr, panel_W_ptr,
-                                 ldw);
+                                 panel_ptr, lda, R, ldr, panel_W_ptr, ldw);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -116,8 +114,7 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         // copy panelR data to panel (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(R, ldr, panel_ptr, lda, panel_m,
-                                   panel_n);
+                                T>(R, ldr, panel_ptr, lda, panel_m, panel_n);
 
         // update A by ZY mode
         // first panel process
@@ -194,8 +191,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
         sub_matrix_ptr_oA, ldoA, sub_matrix_ptr_A, lda, sub_matrix_n,
         sub_matrix_n);
-    
-    
 
     // recursive for rest
     sy2sb_recrusive(cublasHandle, cusolverHandle, n - nb, sub_matrix_ptr_A, lda,
