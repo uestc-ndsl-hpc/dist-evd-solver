@@ -231,6 +231,15 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                         fmt::format("cublasXtSgemm failed: {}", status);
                     throw std::runtime_error(error_msg);
                 }
+                status = cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_T,
+                                       panel_m, b, i, &alpha, Z.get() + i, ldz,
+                                       Y.get() + i, ldy, &beta,
+                                       A_host + i + i * lda, lda);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtDgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
             } else {
                 double alpha = -1.0;
                 double beta = 1.0;
@@ -238,6 +247,15 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                                             CUBLAS_OP_T, panel_m, b, i, &alpha,
                                             Y.get() + i, ldy, Z.get() + i, ldz,
                                             &beta, A_host + i + i * lda, lda);
+                if (status != CUBLAS_STATUS_SUCCESS) {
+                    auto error_msg =
+                        fmt::format("cublasXtDgemm failed: {}", status);
+                    throw std::runtime_error(error_msg);
+                }
+                status = cublasXtDgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_T,
+                                       panel_m, b, i, &alpha, Z.get() + i, ldz,
+                                       Y.get() + i, ldy, &beta,
+                                       A_host + i + i * lda, lda);
                 if (status != CUBLAS_STATUS_SUCCESS) {
                     auto error_msg =
                         fmt::format("cublasXtDgemm failed: {}", status);
@@ -338,7 +356,11 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
 
     auto oriA_v = thrust::host_vector<T>(n * n);
 
-    thrust::copy(A, A + n * n, oriA_v.begin());
+    try {
+        thrust::copy(A, A + n * n, oriA_v.begin());
+    } catch (...) {
+        throw std::runtime_error("oriA_v copy failed");
+    }
 
     // compute the element amount by gpu number
     if (n % b % gpu_num != 0) {
@@ -357,7 +379,6 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     }
 
     std::vector<thrust::device_vector<T>> gpu_A(gpu_num);
-    std::vector<thrust::device_vector<T>> gpu_oriA(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_W(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_Y(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_R(gpu_num);
@@ -372,11 +393,13 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         gpu_R[i] = thrust::device_vector<T>(n * nb);
         gpu_Z[i] = thrust::device_vector<T>(n * nb, 0);
         gpu_work[i] = thrust::device_vector<T>(nb * nb);
-        thrust::copy(A + gpu_start[i], A + gpu_start[i] + occupy_each_gpu * n,
-                     gpu_A[i].begin());
-        thrust::copy(oriA_v.data() + gpu_start[i],
-                     oriA_v.data() + gpu_start[i] + occupy_each_gpu * n,
-                     gpu_oriA[i].begin());
+        try {
+            thrust::copy(A + gpu_start[i],
+                         A + gpu_start[i] + occupy_each_gpu * n,
+                         gpu_A[i].begin());
+        } catch (...) {
+            throw std::runtime_error("gpu_A copy failed");
+        }
     }
 
     if (n % nb % gpu_num != 0) {
