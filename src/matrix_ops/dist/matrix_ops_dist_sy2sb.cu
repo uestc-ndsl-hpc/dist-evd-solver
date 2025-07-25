@@ -9,7 +9,6 @@
 
 #include "fmt/format.h"
 #include "gpu_handle_wrappers.h"
-#include "log.h"
 #include "matrix_ops.cuh"
 #include "matrix_ops_dist.cuh"
 #include "sy2sb_panelqr.cuh"
@@ -73,10 +72,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
     cudaSetDevice(gpu_index);
-    util::Logger::println(
-        "recrusive_depth {} : gpu_index {} block_idx {} gpu_start {}",
-        recrusive_depth, gpu_index, recrusive_offset - gpu_start[gpu_index],
-        gpu_start[gpu_index]);
     auto recrusive_offset_finished = nb * recrusive_depth;
     auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
     auto W = gpu_W[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
@@ -86,9 +81,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
     auto ldz = lda;
     auto work_ptr = gpu_work[gpu_index].data();
     auto ldwork = nb;
-
-    util::Logger::println("recrusive_depth {} : before dbbr update",
-                          recrusive_depth);
 
     for (auto i = b; i <= nb && i < (n - recrusive_offset_finished); i += b) {
         auto panel_m = n - recrusive_offset_finished - i;
@@ -102,10 +94,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         matrix_ops::internal::sy2sb::panelQR(handle, cusolverHandle, panel_m,
                                              panel_n, panel_ptr, lda, R, lda,
                                              panel_W_ptr, ldw);
-
-        util::Logger::println(
-            "recrusive_depth {} : finished panelQR in panel {}",
-            recrusive_depth, i / b);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -149,14 +137,10 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
                              true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
                              ldwork);
-            util::Logger::println(
-                "The problem didnt happen when compute the tmp 1");
             // panel_z = panel_z - panel_y * panel_z^T * panel_z
             matrix_ops::gemm(handle, panel_m, b, b, (T)(-0.5), panel_Y_ptr, ldy,
                              false, work_ptr, ldwork, false, (T)1, panel_Z_ptr,
                              ldz);
-            util::Logger::println(
-                "The problem didnt happen when compute the sub panel 1");
         } else {
             if constexpr (std::is_same_v<T, float>) {
                 float alpha = 1.0f;
@@ -183,8 +167,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                     throw std::runtime_error(error_msg);
                 }
             }
-            util::Logger::println(
-                "The problem didnt happen when compute the tmp 2 xtgemm");
             // panel_tmp = (Z + i)^T * panel_w
             matrix_ops::gemm(handle, i - b, b, panel_m, (T)1, Z + i, ldz, true,
                              panel_W_ptr, ldw, false, (T)0, work_ptr, ldwork);
@@ -208,33 +190,32 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
             matrix_ops::gemm(handle, panel_m, b, b, (T)(-0.5), panel_Y_ptr, ldy,
                              false, work_ptr, ldwork, false, (T)1, panel_Z_ptr,
                              ldz);
-            util::Logger::println(
-                "The problem didnt happen when compute the tmp 2 gemm");
         }
         // TODO: 这里实际需要 cublasXt 因为 Y 很大，需要考虑是否需要优化
         if (i < nb) {
-            util::Logger::println(
-                "The problem didnt happen before computing the small syr2k");
-
-            thrust::copy(gpu_A[gpu_index].begin(), gpu_A[gpu_index].end(),
-                         A_host + gpu_start[gpu_index]);
+            try {
+                thrust::copy(gpu_A[gpu_index].begin(), gpu_A[gpu_index].end(),
+                             A_host + gpu_start[gpu_index]);
+            } catch (...) {
+                throw std::runtime_error("before cublasXtSgemm copy failed");
+            }
 
             if constexpr (std::is_same_v<T, float>) {
                 float alpha = -1.0f;
                 float beta = 1.0f;
-                auto status = cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N,
-                                            CUBLAS_OP_T, panel_m, b, i, &alpha,
-                                            Y.get() + i, ldy, Z.get() + i, ldz,
-                                            &beta, A_host + i + i * lda, lda);
+                auto status = cublasXtSgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_T, panel_m, b, i,
+                    &alpha, Y.get() + i, ldy, Z.get() + i, ldz, &beta,
+                    A_host + recrusive_offset + i + i * lda, lda);
                 if (status != CUBLAS_STATUS_SUCCESS) {
                     auto error_msg =
                         fmt::format("cublasXtSgemm failed: {}", status);
                     throw std::runtime_error(error_msg);
                 }
-                status = cublasXtSgemm(cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_T,
-                                       panel_m, b, i, &alpha, Z.get() + i, ldz,
-                                       Y.get() + i, ldy, &beta,
-                                       A_host + i + i * lda, lda);
+                status = cublasXtSgemm(
+                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_T, panel_m, b, i,
+                    &alpha, Z.get() + i, ldz, Y.get() + i, ldy, &beta,
+                    A_host + recrusive_offset + i + i * lda, lda);
                 if (status != CUBLAS_STATUS_SUCCESS) {
                     auto error_msg =
                         fmt::format("cublasXtDgemm failed: {}", status);
@@ -263,17 +244,19 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                 }
             }
 
-            util::Logger::println(
-                "The problem didnt happen when computing the small syr2k");
+            try {
+                for (auto i = gpu_index; i < gpu_num; i++) {
+                    cudaSetDevice(i);
+                    thrust::copy(A_host + gpu_start[i],
+                                 A_host + gpu_start[i] + gpu_A[i].size(),
+                                 gpu_A[i].begin());
+                }
+                cudaSetDevice(gpu_index);
+            } catch (...) {
+                throw std::runtime_error("after cublasXtSgemm copy failed");
+            }
         }
-
-        util::Logger::println(
-            "recrusive_depth {} : finished zy update in panel {}",
-            recrusive_depth, i / b);
     }
-
-    util::Logger::println("recrusive_depth {} : finished dbbr update",
-                          recrusive_depth);
 
     // recursive exit
     if (n <= nb + recrusive_offset_finished) return;
@@ -305,9 +288,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
         }
     }
 
-    util::Logger::println("recrusive_depth {} : finished syr2k update",
-                          recrusive_depth);
-
     // TODO: 待实际实现 copy Lower to Upper to build a full symmetric matrix for
     // Z = AW the updated part
     auto sub_matrix_n = n - nb - recrusive_offset_finished;
@@ -337,9 +317,6 @@ void sy2sb_recrusive(size_t recrusive_depth, const common::CublasHandle& handle,
                          gpu_A[i].begin());
         }
     }
-
-    util::Logger::println("recrusive_depth {} : make symmetric update",
-                          recrusive_depth);
 
     internal::sy2sb_recrusive(recrusive_depth + 1, handle, cusolverHandle,
                               cublasXtHandle, n, A_host, oriA_host, lda, Y_host,
@@ -427,9 +404,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         thrust::copy(gpu_Y[i].begin(), gpu_Y[i].end(), Y + gpu_start[i]);
     }
 
-    util::Logger::println("sy2sb dist finished");
-
-    {
+    try {
         // TODO: 一个对称的伪实现
         thrust::device_vector<T> tmp(n * n);
         thrust::copy(A, A + n * n, tmp.begin());
@@ -439,6 +414,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
             thrust::make_counting_iterator<size_t>(n * n),
             internal::make_symmetric_functor<T>(tmp.data(), n, lda));
         thrust::copy(tmp.begin(), tmp.end(), A);
+    } catch(...) {
+        throw std::runtime_error("make symmetric failed");
     }
 
     return;
