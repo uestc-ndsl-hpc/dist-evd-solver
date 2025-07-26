@@ -57,11 +57,12 @@ size_t computeGPUIndex4Panel(size_t offset, std::vector<size_t>& gpu_start) {
 }
 
 template <typename T>
-void sy2sb_recrusive(size_t recrusive_depth, std::vector<common::CublasHandle>& cublas_handle_mg,
+void sy2sb_recrusive(size_t recrusive_depth,
+                     std::vector<common::CublasHandle>& cublas_handle_mg,
                      std::vector<common::CusolverDnHandle>& cusolver_handle_mg,
                      const common::CublasXtHandle& cublasXtHandle, size_t n,
-                     T* A_host, T* oriA_host, size_t lda, T* Y_host, size_t ldy,
-                     T* W_host, size_t ldw, size_t nb, size_t b, size_t gpu_num,
+                     T* oriA_host, size_t lda, T* Y_host, size_t ldy, T* W_host,
+                     size_t ldw, size_t nb, size_t b, size_t gpu_num,
                      size_t occupy_each_gpu, std::vector<size_t>& gpu_start,
                      std::vector<thrust::device_vector<T>>& gpu_A,
                      std::vector<thrust::device_vector<T>>& gpu_W,
@@ -193,25 +194,16 @@ void sy2sb_recrusive(size_t recrusive_depth, std::vector<common::CublasHandle>& 
                              false, work_ptr, ldwork, false, (T)1, panel_Z_ptr,
                              ldz);
         }
-        // TODO: 这里实际需要 cublasXt 因为 Y 很大，需要考虑是否需要优化
         if (i < nb) {
-            try {
-                common::CublasHandle tmp_handle;
+            common::CublasHandle tmp_handle;
 
-                matrix_ops::gemm(tmp_handle, panel_m, b, i, (T)(-1), Y + i, ldy,
-                                 false, Z + i, ldz, true, (T)1, A + i + i *
-                                 lda, lda);
+            matrix_ops::gemm(tmp_handle, panel_m, b, i, (T)(-1), Y + i, ldy,
+                             false, Z + i, ldz, true, (T)1, A + i + i * lda,
+                             lda);
 
-                matrix_ops::gemm(tmp_handle, panel_m, b, i, (T)(-1), Z + i, ldz,
-                                 false, Y + i, ldy, true, (T)1, A + i + i *
-                                 lda, lda);
-            } catch (...) {
-                auto error_msg = fmt::format(
-                    "Error in GeemEx: offset {} size {}",
-                    A.get() + i + i * lda - gpu_A[gpu_index].data().get(),
-                    gpu_A[gpu_index].size());
-                throw std::runtime_error(error_msg);
-            }
+            matrix_ops::gemm(tmp_handle, panel_m, b, i, (T)(-1), Z + i, ldz,
+                             false, Y + i, ldy, true, (T)1, A + i + i * lda,
+                             lda);
         }
     }
 
@@ -275,11 +267,11 @@ void sy2sb_recrusive(size_t recrusive_depth, std::vector<common::CublasHandle>& 
         }
     }
 
-    internal::sy2sb_recrusive(recrusive_depth + 1, cublas_handle_mg, cusolver_handle_mg,
-                              cublasXtHandle, n, A_host, oriA_host, lda, Y_host,
-                              ldy, W_host, ldw, nb, b, gpu_num, occupy_each_gpu,
-                              gpu_start, gpu_A, gpu_W, gpu_Y, gpu_R, gpu_Z,
-                              gpu_work);
+    internal::sy2sb_recrusive(recrusive_depth + 1, cublas_handle_mg,
+                              cusolver_handle_mg, cublasXtHandle, n, oriA_host,
+                              lda, Y_host, ldy, W_host, ldw, nb, b, gpu_num,
+                              occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y,
+                              gpu_R, gpu_Z, gpu_work);
 }
 }  // namespace internal
 
@@ -287,14 +279,6 @@ template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
            size_t ldy, T* W, size_t ldw, size_t nb, size_t b, size_t gpu_num) {
     auto cusolverHandle = common::CusolverDnHandle();
-
-    auto oriA_v = thrust::host_vector<T>(n * n);
-
-    try {
-        thrust::copy(A, A + n * n, oriA_v.begin());
-    } catch (...) {
-        throw std::runtime_error("oriA_v copy failed");
-    }
 
     // compute the element amount by gpu number
     if (n % b % gpu_num != 0) {
@@ -349,12 +333,10 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::iota(gpu_used_xt.begin(), gpu_used_xt.end(), 0);
     cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used_xt.data());
 
-    auto oriA = oriA_v.data();
-
-    internal::sy2sb_recrusive(0, gpu_cublas_handle, gpu_cusolverdn_handle, cublasXtHandle, n, A,
-                              oriA, lda, Y, ldy, W, ldw, nb, b, gpu_num,
-                              occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y,
-                              gpu_R, gpu_Z, gpu_work);
+    internal::sy2sb_recrusive(0, gpu_cublas_handle, gpu_cusolverdn_handle,
+                              cublasXtHandle, n, A, lda, Y, ldy, W, ldw, nb, b,
+                              gpu_num, occupy_each_gpu, gpu_start, gpu_A, gpu_W,
+                              gpu_Y, gpu_R, gpu_Z, gpu_work);
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
         cudaSetDevice(i);
