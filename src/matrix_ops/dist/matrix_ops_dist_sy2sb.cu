@@ -72,8 +72,9 @@ void sy2sb_recrusive(size_t recrusive_depth,
                      std::vector<thrust::device_vector<T>>& gpu_R,
                      std::vector<thrust::device_vector<T>>& gpu_Z,
                      std::vector<thrust::device_vector<T>>& gpu_work,
-                     std::vector<thrust::device_vector<T>>& gpu_oriA) {
-
+                     std::vector<thrust::device_vector<T>>& gpu_oriA,
+                     std::vector<cudaStream_t>& streams,
+                     std::vector<ncclComm_t>& comms) {
     auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
     cudaSetDevice(gpu_index);
@@ -114,32 +115,104 @@ void sy2sb_recrusive(size_t recrusive_depth,
         // update A by ZY mode
         // first panel process
         auto panel_OriA_ptr_xt = oriA_host + recrusive_offset + i * lda + i;
-        if (i == b) {
-            if constexpr (std::is_same_v<T, float>) {
-                float alpha = 1.0f;
-                float beta = 0.0f;
-                auto status = cublasXtSgemm(
-                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
-                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
-                    ldw, &beta, panel_Z_ptr.get(), ldz);
-                if (status != CUBLAS_STATUS_SUCCESS) {
-                    auto error_msg =
-                        fmt::format("cublasXtSgemm failed: {}", status);
-                    throw std::runtime_error(error_msg);
+        if constexpr (std::is_same_v<T, float>) {
+            float alpha = 1.0f;
+            float beta = 0.0f;
+            auto status = cublasXtSgemm(
+                cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b, panel_m,
+                &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(), ldw, &beta,
+                panel_Z_ptr.get(), ldz);
+            if (status != CUBLAS_STATUS_SUCCESS) {
+                auto error_msg =
+                    fmt::format("cublasXtSgemm failed: {}", status);
+                throw std::runtime_error(error_msg);
+            }
+        } else {
+            double alpha = 1.0;
+            double beta = 0.0;
+            auto status = cublasXtDgemm(
+                cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b, panel_m,
+                &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(), ldw, &beta,
+                panel_Z_ptr.get(), ldz);
+            if (status != CUBLAS_STATUS_SUCCESS) {
+                auto error_msg =
+                    fmt::format("cublasXtDgemm failed: {}", status);
+                throw std::runtime_error(error_msg);
+            }
+        }
+
+        matrix_ops::print(panel_Z_ptr, panel_m, b, ldz, "panel_Z_ptr");
+
+        auto rest_gpu_num = gpu_num - gpu_index;
+
+        if (rest_gpu_num > 1) {
+            // copy W to workspace
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                panel_W_ptr, ldw, gpu_work[gpu_index].data(), panel_m, panel_m,
+                b);
+#pragma omp parallel num_threads(rest_gpu_num)
+            {
+                auto omp_index = omp_get_thread_num();
+                auto omp_gpu_index = gpu_index + omp_index;
+
+                cudaSetDevice(omp_gpu_index);
+                auto nccl_type = ncclFloat32;
+                if constexpr (std::is_same_v<T, float>) {
+                    nccl_type = ncclFloat32;
+                } else if constexpr (std::is_same_v<T, double>) {
+                    nccl_type = ncclFloat64;
                 }
-            } else {
-                double alpha = 1.0;
-                double beta = 0.0;
-                auto status = cublasXtDgemm(
-                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
-                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
-                    ldw, &beta, panel_Z_ptr.get(), ldz);
-                if (status != CUBLAS_STATUS_SUCCESS) {
-                    auto error_msg =
-                        fmt::format("cublasXtDgemm failed: {}", status);
-                    throw std::runtime_error(error_msg);
+                ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m,
+                          nccl_type, gpu_index, comms[omp_gpu_index],
+                          streams[omp_gpu_index]);
+
+                auto& panel_handle = cublas_handle_mg[omp_gpu_index];
+                auto oriA_panel = gpu_oriA[omp_gpu_index].data() + i +
+                                  recrusive_offset_finished;
+                auto z_panel_rows = occupy_each_gpu;
+
+                if (omp_index == 0) {
+                    oriA_panel = gpu_oriA[omp_gpu_index].data() +
+                                 recrusive_offset - gpu_start[omp_gpu_index] +
+                                 i + i * lda;
+                    z_panel_rows =
+                        panel_m - occupy_each_gpu * (rest_gpu_num - 1);
+                }
+                thrust::device_vector<T> aw_panel(z_panel_rows * b);
+
+                if (z_panel_rows != 0) {
+                    matrix_ops::gemm(
+                        panel_handle, z_panel_rows, b, panel_m, (T)1,
+                        oriA_panel, lda, true, gpu_work[omp_gpu_index].data(),
+                        panel_m, false, (T)0, aw_panel.data(), z_panel_rows);
+                    if (omp_index == 0) {
+                        matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                                thrust::device_ptr<T>, T>(
+                            aw_panel.data(), z_panel_rows, panel_Z_ptr, ldz,
+                            z_panel_rows, b);
+                    } else {
+                        auto row_finished =
+                            (omp_index - 1) * occupy_each_gpu + panel_m -
+                            occupy_each_gpu * (rest_gpu_num - 1);
+                        
+                    }
+                }
+
+#pragma omp critical
+                {
+                    if (z_panel_rows != 0)
+                        matrix_ops::print(
+                            aw_panel.data(), z_panel_rows, b,
+                            fmt::format("gpu_work[{}]", omp_gpu_index));
                 }
             }
+        } else {
+            // for single card, we just execute gemm
+            auto oriA_panel = gpu_oriA[gpu_index].data() + recrusive_offset -
+                              gpu_start[gpu_index] + i + i * lda;
+        }
+        if (i == b) {
             // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
                              true, panel_Z_ptr, ldz, false, (T)0, work_ptr,
@@ -149,31 +222,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
                              false, work_ptr, ldwork, false, (T)1, panel_Z_ptr,
                              ldz);
         } else {
-            if constexpr (std::is_same_v<T, float>) {
-                float alpha = 1.0f;
-                float beta = 0.0f;
-                auto status = cublasXtSgemm(
-                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
-                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
-                    ldw, &beta, panel_Z_ptr.get(), ldz);
-                if (status != CUBLAS_STATUS_SUCCESS) {
-                    auto error_msg =
-                        fmt::format("cublasXtSgemm failed: {}", status);
-                    throw std::runtime_error(error_msg);
-                }
-            } else {
-                double alpha = 1.0;
-                double beta = 0.0;
-                auto status = cublasXtDgemm(
-                    cublasXtHandle, CUBLAS_OP_N, CUBLAS_OP_N, panel_m, b,
-                    panel_m, &alpha, panel_OriA_ptr_xt, lda, panel_W_ptr.get(),
-                    ldw, &beta, panel_Z_ptr.get(), ldz);
-                if (status != CUBLAS_STATUS_SUCCESS) {
-                    auto error_msg =
-                        fmt::format("cublasXtDgemm failed: {}", status);
-                    throw std::runtime_error(error_msg);
-                }
-            }
             // panel_tmp = (Z + i)^T * panel_w
             matrix_ops::gemm(handle, i - b, b, panel_m, (T)1, Z + i, ldz, true,
                              panel_W_ptr, ldw, false, (T)0, work_ptr, ldwork);
@@ -275,8 +323,8 @@ void sy2sb_recrusive(size_t recrusive_depth,
                               cusolver_handle_mg, cublasXtHandle, n, oriA_host,
                               lda, Y_host, ldy, W_host, ldw, nb, b, gpu_num,
                               occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y,
-                              gpu_R, gpu_Z, gpu_work, gpu_oriA);
-}
+                              gpu_R, gpu_Z, gpu_work, gpu_oriA, streams, comms);
+}  // namespace internal
 }  // namespace internal
 
 template <typename T>
@@ -358,10 +406,10 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
 
     cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used.data());
 
-    internal::sy2sb_recrusive(0, gpu_cublas_handle, gpu_cusolverdn_handle,
-                              cublasXtHandle, n, A, lda, Y, ldy, W, ldw, nb, b,
-                              gpu_num, occupy_each_gpu, gpu_start, gpu_A, gpu_W,
-                              gpu_Y, gpu_R, gpu_Z, gpu_work, gpu_oriA);
+    internal::sy2sb_recrusive(
+        0, gpu_cublas_handle, gpu_cusolverdn_handle, cublasXtHandle, n, A, lda,
+        Y, ldy, W, ldw, nb, b, gpu_num, occupy_each_gpu, gpu_start, gpu_A,
+        gpu_W, gpu_Y, gpu_R, gpu_Z, gpu_work, gpu_oriA, gpu_stream, comms);
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
         cudaSetDevice(i);
