@@ -135,3 +135,18 @@ target_link_libraries(multi_gpu_cublasxt
     PRIVATE
         dist-evd-solver-lib
 )
+
+add_executable(nccl_gpu_gemm env/nccl_gpu_gemm.cu)
+
+target_link_libraries(nccl_gpu_gemm
+    PRIVATE
+        dist-evd-solver-lib
+        NVHPC::NCCL
+)
+
+find_package(OpenMP REQUIRED)
+
+if(OpenMP_FOUND)
+    target_compile_options(nccl_gpu_gemm PRIVATE "-Xcompiler=-fopenmp")
+    target_link_libraries(nccl_gpu_gemm PRIVATE OpenMP::OpenMP_CXX)
+endif()

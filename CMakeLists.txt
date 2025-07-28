@@ -40,7 +40,7 @@ FetchContent_MakeAvailable(fmt argh googletest)
 
 
 # --- 核心依赖 ---
-find_package(NVHPC REQUIRED COMPONENTS MATH CUDA)
+find_package(NVHPC REQUIRED)
 
 
 # --- 项目库定义 ---

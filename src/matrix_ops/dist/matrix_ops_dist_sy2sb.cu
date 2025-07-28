@@ -302,6 +302,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::vector<thrust::device_vector<T>> gpu_R(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_Z(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_work(gpu_num);
+    std::vector<thrust::device_vector<T>> gpu_oriA(gpu_num);
     std::vector<common::CublasHandle> gpu_cublas_handle(gpu_num);
     std::vector<common::CusolverDnHandle> gpu_cusolverdn_handle(gpu_num);
 
@@ -312,6 +313,7 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
         gpu_Y[i] = thrust::device_vector<T>(occupy_each_gpu * n, (T)0);
         gpu_R[i] = thrust::device_vector<T>(n * nb);
         gpu_Z[i] = thrust::device_vector<T>(n * nb, 0);
+        gpu_oriA[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_work[i] = thrust::device_vector<T>(nb * nb);
         try {
             thrust::copy(A + gpu_start[i],
