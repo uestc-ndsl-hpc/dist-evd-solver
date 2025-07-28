@@ -63,6 +63,8 @@ target_include_directories(dist-evd-solver-lib
         src/include/matrix_ops/internal/sy2sb
 )
 
+find_package(OpenMP REQUIRED)
+
 target_link_libraries(dist-evd-solver-lib
     PUBLIC
         NVHPC::CUDART
@@ -70,17 +72,23 @@ target_link_libraries(dist-evd-solver-lib
         NVHPC::CUBLAS
         NVHPC::CUSOLVER
         NVHPC::CURAND
+        NVHPC::NCCL
         fmt::fmt
+        OpenMP::OpenMP_CXX
         argh
 )
 
+target_link_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
 
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver
     src/main.cu
-    # src/workflow/workflow_sy2sb.cu
     src/workflow/workflow_sy2sb_dist.cu
 )
+
+target_link_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
 
 target_link_libraries(dist-evd-solver
     PRIVATE

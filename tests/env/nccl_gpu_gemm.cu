@@ -80,27 +80,16 @@ int main() {
         auto gpu_id = dev_list[i];
         CUDACHECK(cudaSetDevice(gpu_id));
 
-        // a. 根GPU准备广播数据
         if (gpu_id == root_gpu) {
             CUDACHECK(cudaMemcpyAsync(
                 buffer[i].data().get(), b_bcast.data().get(),
                 m * n * sizeof(float), cudaMemcpyDeviceToDevice, streams[i]));
         }
-
-        // b. 执行集体广播
         NCCLCHECK(ncclBcast(buffer[i].data().get(), m * n, ncclFloat, root_gpu,
                             comms[i], streams[i]));
-
-        // c. 执行 GEMM 计算
-        // op(A) = gpu_data_dist^T, 维度 (n4gpu, m) = (8, 16)
-        // op(B) = buffer, 维度 (m, n) = (16, 16)
-        // C = ans_data_dist, 维度 (n4gpu, n) = (8, 16)
-        // cublas的m,n,k分别对应结果C的行、列和内积维度
         matrix_ops::gemm(handles[i], n4gpu, n, m, 1.f, gpu_data_dist[i].data(),
                          m, true, buffer[i].data(), m, false, 0.f,
                          ans_data_dist[i].data(), n4gpu);
-
-        // d. 同步流，等待所有在该流上的异步操作完成
         CUDACHECK(cudaStreamSynchronize(streams[i]));
 
         // e. 现在可以安全地打印结果了

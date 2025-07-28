@@ -1,3 +1,5 @@
+#include <nccl.h>
+#include <omp.h>
 #include <thrust/host_vector.h>
 
 #include <algorithm>
@@ -69,7 +71,9 @@ void sy2sb_recrusive(size_t recrusive_depth,
                      std::vector<thrust::device_vector<T>>& gpu_Y,
                      std::vector<thrust::device_vector<T>>& gpu_R,
                      std::vector<thrust::device_vector<T>>& gpu_Z,
-                     std::vector<thrust::device_vector<T>>& gpu_work) {
+                     std::vector<thrust::device_vector<T>>& gpu_work,
+                     std::vector<thrust::device_vector<T>>& gpu_oriA) {
+
     auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
     cudaSetDevice(gpu_index);
@@ -271,7 +275,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                               cusolver_handle_mg, cublasXtHandle, n, oriA_host,
                               lda, Y_host, ldy, W_host, ldw, nb, b, gpu_num,
                               occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y,
-                              gpu_R, gpu_Z, gpu_work);
+                              gpu_R, gpu_Z, gpu_work, gpu_oriA);
 }
 }  // namespace internal
 
@@ -290,11 +294,11 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     for (int i = 0; i < gpu_num; i++) {
         gpu_start[i] = i * occupy_each_gpu * n;
     }
+
+    std::vector<common::CublasHandle> gpu_cublas_handle;
+    std::vector<common::CusolverDnHandle> gpu_cusolverdn_handle;
+
     std::vector<cudaStream_t> gpu_stream(gpu_num);
-    for (auto i = (size_t)0; i < gpu_num; i++) {
-        cudaSetDevice(i);
-        cudaStreamCreate(&gpu_stream[i]);
-    }
 
     std::vector<thrust::device_vector<T>> gpu_A(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_W(gpu_num);
@@ -303,22 +307,36 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     std::vector<thrust::device_vector<T>> gpu_Z(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_work(gpu_num);
     std::vector<thrust::device_vector<T>> gpu_oriA(gpu_num);
-    std::vector<common::CublasHandle> gpu_cublas_handle(gpu_num);
-    std::vector<common::CusolverDnHandle> gpu_cusolverdn_handle(gpu_num);
+
+    std::vector<ncclComm_t> comms(gpu_num);
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
         cudaSetDevice(i);
+
+        // stream
+        cudaStreamCreate(&gpu_stream[i]);
+
+        // handle
+        gpu_cublas_handle.push_back(common::CublasHandle());
+        cublasSetStream(gpu_cublas_handle[i], gpu_stream[i]);
+        gpu_cusolverdn_handle.push_back(common::CusolverDnHandle());
+        cusolverDnSetStream(gpu_cusolverdn_handle[i], gpu_stream[i]);
+
+        // memory
         gpu_A[i] = thrust::device_vector<T>(occupy_each_gpu * n);
         gpu_W[i] = thrust::device_vector<T>(occupy_each_gpu * n, (T)0);
         gpu_Y[i] = thrust::device_vector<T>(occupy_each_gpu * n, (T)0);
         gpu_R[i] = thrust::device_vector<T>(n * nb);
         gpu_Z[i] = thrust::device_vector<T>(n * nb, 0);
         gpu_oriA[i] = thrust::device_vector<T>(occupy_each_gpu * n);
-        gpu_work[i] = thrust::device_vector<T>(nb * nb);
+        gpu_work[i] = thrust::device_vector<T>(2 * n * nb);
         try {
             thrust::copy(A + gpu_start[i],
                          A + gpu_start[i] + occupy_each_gpu * n,
                          gpu_A[i].begin());
+            thrust::copy(A + gpu_start[i],
+                         A + gpu_start[i] + occupy_each_gpu * n,
+                         gpu_oriA[i].begin());
         } catch (...) {
             throw std::runtime_error("gpu_A copy failed");
         }
@@ -331,14 +349,19 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
 
     common::CublasXtHandle cublasXtHandle;
 
-    std::vector<int> gpu_used_xt(gpu_num);
-    std::iota(gpu_used_xt.begin(), gpu_used_xt.end(), 0);
-    cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used_xt.data());
+    std::vector<int> gpu_used(gpu_num);
+    std::iota(gpu_used.begin(), gpu_used.end(), 0);
+    auto status = ncclCommInitAll(comms.data(), gpu_num, gpu_used.data());
+    if (status != ncclSuccess) {
+        throw std::runtime_error("ncclCommInitAll failed");
+    }
+
+    cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used.data());
 
     internal::sy2sb_recrusive(0, gpu_cublas_handle, gpu_cusolverdn_handle,
                               cublasXtHandle, n, A, lda, Y, ldy, W, ldw, nb, b,
                               gpu_num, occupy_each_gpu, gpu_start, gpu_A, gpu_W,
-                              gpu_Y, gpu_R, gpu_Z, gpu_work);
+                              gpu_Y, gpu_R, gpu_Z, gpu_work, gpu_oriA);
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
         cudaSetDevice(i);
