@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "fmt/base.h"
 #include "fmt/format.h"
 #include "gpu_handle_wrappers.h"
 #include "matrix_ops.cuh"
@@ -130,7 +131,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                                     thrust::device_ptr<T>, T>(
                 panel_W_ptr, ldw, gpu_work[gpu_index].data(), panel_m, panel_m,
                 b);
-            // z buffer to receive
+            // TODO: z buffer to receive
             std::vector<thrust::device_vector<T>> z_buffer_rec(rest_gpu_num -
                                                                1);
 #pragma omp parallel num_threads(rest_gpu_num)
@@ -250,66 +251,109 @@ void sy2sb_recrusive(size_t recrusive_depth,
     // recursive exit
     if (n <= nb + recrusive_offset_finished) return;
 
-    auto tail_matrix_host_ptr =
-        oriA_host + (recrusive_depth + 1) * (nb + nb * lda);
+    auto offset = (recrusive_depth + 1) * (nb + nb * lda);
+    auto tail_gpu_start_index = computeGPUIndex4Panel(offset, gpu_start);
+    auto rest_gpu_num = gpu_num - tail_gpu_start_index;
+    auto tail_matrix_ptr = gpu_oriA[tail_gpu_start_index].data() + offset -
+                           gpu_start[tail_gpu_start_index];
+    auto sub_matrix_n = n - recrusive_offset_finished - nb;
 
-    if constexpr (std::is_same_v<T, float>) {
-        float alpha = -1.0f;
-        float beta = 1.0f;
-        auto status = cublasXtSsyr2k(
-            cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-            n - recrusive_offset_finished - nb, nb, &alpha, Y.get() + nb, ldy,
-            Z.get() + nb, ldz, &beta, tail_matrix_host_ptr, lda);
-        if (status != CUBLAS_STATUS_SUCCESS) {
-            auto error_msg = fmt::format("cublasXtSsyr2k failed: {}", status);
-            throw std::runtime_error(error_msg);
+    cudaSetDevice(gpu_index);
+
+    thrust::device_vector<T> z_send(n * nb);
+
+    if (tail_gpu_start_index == gpu_index) {
+        if (rest_gpu_num == 1) {
+            fmt::println("这时候只剩单卡要执行 syr2k 且就是面板分解的卡");
+
+            matrix_ops::syr2k(handle, n - recrusive_offset_finished - nb, nb,
+                              (T)(-1), Y + nb, ldy, Z + nb, ldz, (T)1,
+                              tail_matrix_ptr, lda);
+
+            thrust::for_each(
+                thrust::make_counting_iterator<size_t>(0),
+                thrust::make_counting_iterator<size_t>(sub_matrix_n *
+                                                       sub_matrix_n),
+                make_symmetric_functor<T>(tail_matrix_ptr, sub_matrix_n, lda));
+
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                tail_matrix_ptr, lda, A + nb + nb * lda, lda,
+                n - recrusive_offset_finished - nb,
+                n - recrusive_offset_finished - nb);
+        } else {
+            fmt::println("待实现");
         }
     } else {
-        double alpha = -1.0;
-        double beta = 1.0;
-        auto status = cublasXtDsyr2k(
-            cublasXtHandle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
-            n - recrusive_offset_finished - nb, nb, &alpha, Y.get() + nb, ldy,
-            Z.get() + nb, ldz, &beta, tail_matrix_host_ptr, lda);
-        if (status != CUBLAS_STATUS_SUCCESS) {
-            auto error_msg = fmt::format("cublasXtDsyr2k failed: {}", status);
-            throw std::runtime_error(error_msg);
-        }
-    }
+        if (rest_gpu_num == 1) {
+            fmt::println("这时候只剩单卡要执行 syr2k 但是面板分解在上一张卡");
+            auto sub_matrix_n = n - recrusive_offset_finished - nb;
 
-    // TODO: 待实际实现 copy Lower to Upper to build a full symmetric matrix for
-    // Z = AW the updated part
-    auto sub_matrix_n = n - nb - recrusive_offset_finished;
-    {
-        auto tmp = thrust::device_vector<T>(n * n);
-        auto sub_matrix_ptr_oA = tmp.data() + recrusive_offset + nb * lda + nb;
-        thrust::copy(oriA_host, oriA_host + n * n, tmp.begin());
-        thrust::for_each(
-            thrust::make_counting_iterator<size_t>(0),
-            thrust::make_counting_iterator<size_t>(sub_matrix_n * sub_matrix_n),
-            make_symmetric_functor<T>(sub_matrix_ptr_oA, sub_matrix_n, lda));
-        thrust::copy(tmp.begin(), tmp.end(), oriA_host);
-        auto A_now = thrust::host_vector<T>(n * n);
-        for (auto i = 0; i < gpu_num; i++) {
-            cudaSetDevice(i);
-            thrust::copy(gpu_A[i].begin(), gpu_A[i].end(),
-                         A_now.begin() + gpu_start[i]);
-        }
-        matrix_ops::matrix_copy<T*, T*, T>(
-            tail_matrix_host_ptr, lda,
-            A_now.data() + recrusive_offset + nb * lda + nb, lda, sub_matrix_n,
-            sub_matrix_n);
-        for (auto i = 0; i < gpu_num; i++) {
-            cudaSetDevice(i);
-            thrust::copy(A_now.begin() + gpu_start[i],
-                         A_now.begin() + gpu_start[i] + occupy_each_gpu * n,
-                         gpu_A[i].begin());
-        }
-        for (auto i = gpu_index; i < gpu_num; i++) {
-            cudaSetDevice(i);
-            thrust::copy(oriA_host + gpu_start[i],
-                         oriA_host + gpu_start[i] + gpu_oriA[i].size(),
-                         gpu_oriA[i].begin());
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
+                sub_matrix_n, nb);
+
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
+
+            try {
+                ncclGroupStart();
+
+                ncclSend(gpu_work[gpu_index].data().get(), sub_matrix_n * nb,
+                         nccl_type, tail_gpu_start_index, comms[gpu_index],
+                         streams[gpu_index]);
+                ncclRecv(gpu_work[tail_gpu_start_index].data().get(),
+                         sub_matrix_n * nb, nccl_type, gpu_index,
+                         comms[tail_gpu_start_index],
+                         streams[tail_gpu_start_index]);
+
+                ncclGroupEnd();
+            } catch (...) {
+                throw std::runtime_error(fmt::format(
+                    "NCCL error because of the Y send/recv sub_matrix_n {} "
+                    "gpu_index {} tail_gpu_start_index {}",
+                    sub_matrix_n, gpu_index, tail_gpu_start_index));
+            }
+
+            try {
+                ncclGroupStart();
+
+                ncclSend(z_send.data().get(), sub_matrix_n * nb, nccl_type,
+                         tail_gpu_start_index, comms[gpu_index],
+                         streams[gpu_index]);
+                ncclRecv(gpu_Z[tail_gpu_start_index].data().get(),
+                         sub_matrix_n * nb, nccl_type, gpu_index,
+                         comms[tail_gpu_start_index],
+                         streams[tail_gpu_start_index]);
+
+                ncclGroupEnd();
+            } catch (...) {
+                throw std::runtime_error(fmt::format(
+                    "NCCL error because of the Z send/recv sub_matrix_n {} "
+                    "gpu_index {} tail_gpu_start_index {}",
+                    sub_matrix_n, gpu_index, tail_gpu_start_index));
+            }
+
+            cudaSetDevice(tail_gpu_start_index);
+            matrix_ops::syr2k(handle, sub_matrix_n, nb, (T)(-1),
+                              gpu_work[tail_gpu_start_index].data(),
+                              sub_matrix_n, gpu_Z[tail_gpu_start_index].data(),
+                              sub_matrix_n, (T)1, tail_matrix_ptr, lda);
+            thrust::for_each(
+                thrust::make_counting_iterator<size_t>(0),
+                thrust::make_counting_iterator<size_t>(sub_matrix_n *
+                                                       sub_matrix_n),
+                make_symmetric_functor<T>(tail_matrix_ptr, sub_matrix_n, lda));
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                tail_matrix_ptr, lda,
+                gpu_A[tail_gpu_start_index].data() + offset -
+                    gpu_start[tail_gpu_start_index],
+                lda, sub_matrix_n, sub_matrix_n);
+        } else {
+            fmt::println("未实现");
         }
     }
 

@@ -5,7 +5,7 @@
 #include "workflow.cuh"
 
 template <typename T>
-void run_workflow_sy2sb_dist(size_t n, bool validate) {
+void run_workflow_sy2sb_dist(size_t n, bool validate, int gpu_num) {
     // TODO: replace Warm-up cuBLAS to avoid initialization overhead in timing
     // with cublasXt
     {
@@ -59,7 +59,7 @@ void run_workflow_sy2sb_dist(size_t n, bool validate) {
     auto W_h = thrust::host_vector<T>(n * n);
 
     matrix_ops::dist::sy2sb(handle, n, A_h.data(), n, W_h.data(), n, Y_h.data(),
-                            n, 32, 16, 2);
+                            n, 32, 16, gpu_num);
 
     if (util::Logger::is_verbose() && n <= 256) {
         matrix_ops::print(A_h.data(), n, n, n, "A");
@@ -68,5 +68,5 @@ void run_workflow_sy2sb_dist(size_t n, bool validate) {
     }
 }
 
-template void run_workflow_sy2sb_dist<float>(size_t n, bool validate);
-template void run_workflow_sy2sb_dist<double>(size_t n, bool validate);
+template void run_workflow_sy2sb_dist<float>(size_t n, bool validate, int gpu_num);
+template void run_workflow_sy2sb_dist<double>(size_t n, bool validate, int gpu_num);
