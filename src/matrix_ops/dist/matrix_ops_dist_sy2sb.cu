@@ -131,15 +131,9 @@ void sy2sb_recrusive(size_t recrusive_depth,
                                     thrust::device_ptr<T>, T>(
                 panel_W_ptr, ldw, gpu_work[gpu_index].data(), panel_m, panel_m,
                 b);
-            // TODO: z buffer to receive
-            std::vector<thrust::device_vector<T>> z_buffer_rec(rest_gpu_num -
-                                                               1);
 #pragma omp parallel num_threads(rest_gpu_num)
             {
                 auto omp_index = omp_get_thread_num();
-                if (omp_index != 0) {
-                    z_buffer_rec[omp_index - 1].resize(occupy_each_gpu * b);
-                }
                 auto omp_gpu_index = gpu_index + omp_index;
 
                 cudaSetDevice(omp_gpu_index);
@@ -177,7 +171,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                         ncclSend(aw_panel.data().get(), z_panel_rows * b,
                                  nccl_type, gpu_index, comms[omp_gpu_index],
                                  streams[omp_gpu_index]);
-                        ncclRecv(z_buffer_rec[omp_index - 1].data().get(),
+                        ncclRecv(gpu_work[omp_index - 1].data().get(),
                                  z_panel_rows * b, nccl_type, omp_gpu_index,
                                  comms[gpu_index], streams[gpu_index]);
                         ncclGroupEnd();
@@ -188,7 +182,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                         cudaSetDevice(gpu_index);
                         matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                                 thrust::device_ptr<T>, T>(
-                            z_buffer_rec[omp_index - 1].data(), z_panel_rows,
+                            gpu_work[omp_index - 1].data(), z_panel_rows,
                             panel_Z_ptr + row_finished, ldz, z_panel_rows, b);
                     }
                 }
@@ -280,12 +274,63 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 n - recrusive_offset_finished - nb,
                 n - recrusive_offset_finished - nb);
         } else {
-            fmt::println("待实现");
+            // TODO: bug fix 这里会导致 terminate called after throwing an
+            // instance of 'thrust::THRUST_200700_520_NS::system::system_error'
+            //   what():  parallel_for failed: cudaErrorInvalidDevice: invalid
+            //   device ordinal 具体原因待排查
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
+                sub_matrix_n, nb);
+
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
+#pragma omp parallel num_threads(rest_gpu_num)
+            {
+                auto gpu_id = omp_get_thread_num() + gpu_index;
+                cudaSetDevice(gpu_id);
+                auto z_bcast = gpu_Z[gpu_id].data();
+                if (gpu_id == gpu_index) {
+                    z_bcast = z_send.data();
+                }
+                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type,
+                          gpu_index, comms[gpu_id], streams[gpu_id]);
+                ncclBcast(gpu_work[gpu_id].data().get(), sub_matrix_n * nb,
+                          nccl_type, gpu_index, comms[gpu_id], streams[gpu_id]);
+                auto syr2k_panel_col = occupy_each_gpu;
+                auto& syr2k_panel_handle = cublas_handle_mg[gpu_id];
+                auto syr2k_panel_oriA_ptr =
+                    gpu_oriA[gpu_id].data() + (n - sub_matrix_n);
+                auto dst_A_ptr = gpu_A[gpu_id].data() + (n - sub_matrix_n);
+
+                if (gpu_id == gpu_index) {
+                    syr2k_panel_col =
+                        sub_matrix_n - (rest_gpu_num - 1) * occupy_each_gpu;
+                    syr2k_panel_oriA_ptr = tail_matrix_ptr;
+                    dst_A_ptr =
+                        gpu_A[gpu_index].data() + offset - gpu_start[gpu_index];
+                }
+
+                matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n,
+                                 syr2k_panel_col, nb, T(-1), z_bcast,
+                                 sub_matrix_n, false, gpu_work[gpu_id].data(),
+                                 sub_matrix_n, true, T(1), syr2k_panel_oriA_ptr,
+                                 lda);
+                matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n,
+                                 syr2k_panel_col, nb, T(-1),
+                                 gpu_work[gpu_id].data(), sub_matrix_n, false,
+                                 z_bcast, sub_matrix_n, true, T(1),
+                                 syr2k_panel_oriA_ptr, lda);
+
+                // matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                //                         thrust::device_ptr<T>, T>(
+                //     syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
+                //     sub_matrix_n);
+            }
         }
     } else {
         if (rest_gpu_num == 1) {
-            auto sub_matrix_n = n - recrusive_offset_finished - nb;
-
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
                 Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
