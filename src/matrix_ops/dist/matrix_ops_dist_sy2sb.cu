@@ -264,8 +264,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
 
     if (tail_gpu_start_index == gpu_index) {
         if (rest_gpu_num == 1) {
-            fmt::println("这时候只剩单卡要执行 syr2k 且就是面板分解的卡");
-
             matrix_ops::syr2k(handle, n - recrusive_offset_finished - nb, nb,
                               (T)(-1), Y + nb, ldy, Z + nb, ldz, (T)1,
                               tail_matrix_ptr, lda);
@@ -286,7 +284,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
         }
     } else {
         if (rest_gpu_num == 1) {
-            fmt::println("这时候只剩单卡要执行 syr2k 但是面板分解在上一张卡");
             auto sub_matrix_n = n - recrusive_offset_finished - nb;
 
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
@@ -337,7 +334,8 @@ void sy2sb_recrusive(size_t recrusive_depth,
             }
 
             cudaSetDevice(tail_gpu_start_index);
-            matrix_ops::syr2k(handle, sub_matrix_n, nb, (T)(-1),
+            auto& syr2k_handle = cublas_handle_mg[tail_gpu_start_index];
+            matrix_ops::syr2k(syr2k_handle, sub_matrix_n, nb, (T)(-1),
                               gpu_work[tail_gpu_start_index].data(),
                               sub_matrix_n, gpu_Z[tail_gpu_start_index].data(),
                               sub_matrix_n, (T)1, tail_matrix_ptr, lda);
