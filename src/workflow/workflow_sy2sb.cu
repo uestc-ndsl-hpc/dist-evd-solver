@@ -54,7 +54,9 @@ void run_workflow_sy2sb(size_t n, bool validate) {
 
     // 3. Validate the result
     if (util::Logger::is_verbose() && n <= 256) {
-        matrix_ops::print(A, n, "sy2sb result");
+        matrix_ops::print(A, n, "A");
+        matrix_ops::print(W, n, "W");
+        matrix_ops::print(Y, n, "Y");
     }
 }
 

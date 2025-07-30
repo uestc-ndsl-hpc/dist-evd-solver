@@ -274,10 +274,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 n - recrusive_offset_finished - nb,
                 n - recrusive_offset_finished - nb);
         } else {
-            // TODO: bug fix 这里会导致 terminate called after throwing an
-            // instance of 'thrust::THRUST_200700_520_NS::system::system_error'
-            //   what():  parallel_for failed: cudaErrorInvalidDevice: invalid
-            //   device ordinal 具体原因待排查
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
                 Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
@@ -304,29 +300,34 @@ void sy2sb_recrusive(size_t recrusive_depth,
                     gpu_oriA[gpu_id].data() + (n - sub_matrix_n);
                 auto dst_A_ptr = gpu_A[gpu_id].data() + (n - sub_matrix_n);
 
+                auto zy_panel_offset =
+                    sub_matrix_n - (rest_gpu_num - 1) * occupy_each_gpu +
+                    (gpu_id - gpu_index - 1) * occupy_each_gpu;
+
                 if (gpu_id == gpu_index) {
                     syr2k_panel_col =
                         sub_matrix_n - (rest_gpu_num - 1) * occupy_each_gpu;
                     syr2k_panel_oriA_ptr = tail_matrix_ptr;
                     dst_A_ptr =
                         gpu_A[gpu_index].data() + offset - gpu_start[gpu_index];
+                    zy_panel_offset = 0;
                 }
 
-                matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n,
-                                 syr2k_panel_col, nb, T(-1), z_bcast,
-                                 sub_matrix_n, false, gpu_work[gpu_id].data(),
-                                 sub_matrix_n, true, T(1), syr2k_panel_oriA_ptr,
-                                 lda);
+                matrix_ops::gemm(
+                    syr2k_panel_handle, sub_matrix_n, syr2k_panel_col, nb,
+                    T(-1), z_bcast, sub_matrix_n, false,
+                    gpu_work[gpu_id].data() + zy_panel_offset, sub_matrix_n,
+                    true, T(1), syr2k_panel_oriA_ptr, lda);
                 matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n,
                                  syr2k_panel_col, nb, T(-1),
                                  gpu_work[gpu_id].data(), sub_matrix_n, false,
-                                 z_bcast, sub_matrix_n, true, T(1),
-                                 syr2k_panel_oriA_ptr, lda);
+                                 z_bcast + zy_panel_offset, sub_matrix_n, true,
+                                 T(1), syr2k_panel_oriA_ptr, lda);
 
-                // matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                //                         thrust::device_ptr<T>, T>(
-                //     syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
-                //     sub_matrix_n);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
+                    syr2k_panel_col);
             }
         }
     } else {
@@ -409,8 +410,13 @@ void sy2sb_recrusive(size_t recrusive_depth,
 }  // namespace internal
 
 template <typename T>
-void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
-           size_t ldy, T* W, size_t ldw, size_t nb, size_t b, size_t gpu_num) {
+void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* W,
+           size_t ldw, T* Y, size_t ldy, size_t nb, size_t b, size_t gpu_num) {
+
+    // get current device
+    int init_device;
+    cudaGetDevice(&init_device);
+
     auto cusolverHandle = common::CusolverDnHandle();
 
     // compute the element amount by gpu number
@@ -512,6 +518,8 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* Y,
     } catch (...) {
         throw std::runtime_error("make symmetric failed");
     }
+
+    cudaSetDevice(init_device);
 
     return;
 }
