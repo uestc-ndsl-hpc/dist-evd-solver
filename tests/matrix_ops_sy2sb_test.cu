@@ -188,6 +188,7 @@ class Sy2sbTest : public ::testing::Test {
 
         // 计算 cublasXnrm2
         auto norm = (T)0.f;
+        auto A_norm = (T)0.f;
         if constexpr (std::is_same_v<T, float>) {
             cublasSnrm2(handle_, n * n, QTQ.data().get(), 1, &norm);
             ASSERT_NEAR(norm / n, 0.0f, 1e-4);
@@ -243,4 +244,12 @@ TYPED_TEST(Sy2sbTest, dist2gpuSmall) {
 
 TYPED_TEST(Sy2sbTest, dist2gpuBasic) {
     this->run_dist_sy2sb_test(256, 32, 16, 2);
+}
+
+TYPED_TEST(Sy2sbTest, dist4gpuBasic) {
+    this->run_dist_sy2sb_test(256, 32, 16, 4);
+}
+
+TYPED_TEST(Sy2sbTest, dist2gpuLarge) {
+    this->run_dist_sy2sb_test(1024, 32, 16, 2);
 }

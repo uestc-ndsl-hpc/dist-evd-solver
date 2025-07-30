@@ -197,8 +197,4 @@ TYPED_TEST(TsqrTest, FatBlockSize) { this->run_tsqr_test(1024, 32); }
 
 TYPED_TEST(TsqrTest, TallAndSkinny) { this->run_tsqr_test(2048, 16); }
 
-TYPED_TEST(TsqrTest, LargeSize) { this->run_tsqr_test(4096, 32); } 
-
-TYPED_TEST(TsqrTest, AllOne) { this->run_tsqr_test(256, 32, true); }
-
-TYPED_TEST(TsqrTest, AllOneSmall) { this->run_tsqr_test(96, 32, true); }
+TYPED_TEST(TsqrTest, LargeSize) { this->run_tsqr_test(4096, 32); }

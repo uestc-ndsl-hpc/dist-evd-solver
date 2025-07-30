@@ -13,6 +13,7 @@
 #include "fmt/base.h"
 #include "fmt/format.h"
 #include "gpu_handle_wrappers.h"
+#include "log.h"
 #include "matrix_ops.cuh"
 #include "matrix_ops_dist.cuh"
 #include "sy2sb_panelqr.cuh"
@@ -131,6 +132,10 @@ void sy2sb_recrusive(size_t recrusive_depth,
                                     thrust::device_ptr<T>, T>(
                 panel_W_ptr, ldw, gpu_work[gpu_index].data(), panel_m, panel_m,
                 b);
+            std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
+            for (int i = 0; i < rest_gpu_num - 1; i++) {
+                z_recv[i].resize(occupy_each_gpu * b);
+            }
 #pragma omp parallel num_threads(rest_gpu_num)
             {
                 auto omp_index = omp_get_thread_num();
@@ -247,7 +252,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
 
     auto offset = (recrusive_depth + 1) * (nb + nb * lda);
     auto tail_gpu_start_index = computeGPUIndex4Panel(offset, gpu_start);
-    auto rest_gpu_num = gpu_num - tail_gpu_start_index;
+    auto rest_gpu_num = gpu_num - gpu_index;
     auto tail_matrix_ptr = gpu_oriA[tail_gpu_start_index].data() + offset -
                            gpu_start[tail_gpu_start_index];
     auto sub_matrix_n = n - recrusive_offset_finished - nb;
@@ -397,7 +402,54 @@ void sy2sb_recrusive(size_t recrusive_depth,
                     gpu_start[tail_gpu_start_index],
                 lda, sub_matrix_n, sub_matrix_n);
         } else {
-            fmt::println("未实现");
+            util::Logger::println("卡 {} -> 卡 {}", gpu_index,
+                                  tail_gpu_start_index);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
+                sub_matrix_n, nb);
+
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
+#pragma omp parallel num_threads(rest_gpu_num)
+            {
+                auto gpu_id = omp_get_thread_num() + gpu_index;
+                cudaSetDevice(gpu_id);
+                auto z_bcast = gpu_Z[gpu_id].data();
+                if (gpu_id == gpu_index) {
+                    z_bcast = z_send.data();
+                }
+                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type,
+                          gpu_index, comms[gpu_id], streams[gpu_id]);
+                ncclBcast(gpu_work[gpu_id].data().get(), sub_matrix_n * nb,
+                          nccl_type, gpu_index, comms[gpu_id], streams[gpu_id]);
+                if (gpu_id != gpu_index) {
+                    auto syr2k_panel_col = occupy_each_gpu;
+                    auto& syr2k_panel_handle = cublas_handle_mg[gpu_id];
+                    auto syr2k_panel_oriA_ptr =
+                        gpu_oriA[gpu_id].data() + (n - sub_matrix_n);
+                    auto dst_A_ptr = gpu_A[gpu_id].data() + (n - sub_matrix_n);
+
+                    auto zy_panel_offset = (gpu_id - gpu_index - 1) * nb;
+
+                    matrix_ops::gemm(
+                        syr2k_panel_handle, sub_matrix_n, syr2k_panel_col, nb,
+                        T(-1), z_bcast, sub_matrix_n, false,
+                        gpu_work[gpu_id].data() + zy_panel_offset, sub_matrix_n,
+                        true, T(1), syr2k_panel_oriA_ptr, lda);
+                    matrix_ops::gemm(
+                        syr2k_panel_handle, sub_matrix_n, syr2k_panel_col, nb,
+                        T(-1), gpu_work[gpu_id].data(), sub_matrix_n, false,
+                        z_bcast + zy_panel_offset, sub_matrix_n, true, T(1),
+                        syr2k_panel_oriA_ptr, lda);
+
+                    matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                            thrust::device_ptr<T>, T>(
+                        syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
+                        syr2k_panel_col);
+                }
+            }
         }
     }
 
@@ -412,6 +464,10 @@ void sy2sb_recrusive(size_t recrusive_depth,
 template <typename T>
 void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* W,
            size_t ldw, T* Y, size_t ldy, size_t nb, size_t b, size_t gpu_num) {
+    // print args
+    util::Logger::println(
+        "sy2sb: n={}, lda={}, ldw={}, ldy={}, nb={}, b={}, gpu_num={}", n, lda,
+        ldw, ldy, nb, b, gpu_num);
 
     // get current device
     int init_device;
