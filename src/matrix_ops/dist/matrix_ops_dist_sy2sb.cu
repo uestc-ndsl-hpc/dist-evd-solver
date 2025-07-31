@@ -1,4 +1,3 @@
-#include <bits/types/cookie_io_functions_t.h>
 #include <nccl.h>
 #include <omp.h>
 #include <thrust/host_vector.h>
@@ -10,7 +9,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "fmt/base.h"
 #include "fmt/format.h"
 #include "gpu_handle_wrappers.h"
 #include "log.h"
@@ -59,6 +57,79 @@ size_t computeGPUIndex4Panel(size_t offset, std::vector<size_t>& gpu_start) {
         throw std::out_of_range("offset is smaller than all starting points.");
     }
     return std::distance(gpu_start.begin(), it) - 1;
+}
+
+template <typename T>
+void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
+                   size_t omp_index, size_t gpu_index, size_t panel_m,
+                   size_t nb, size_t b, size_t occupy_each_gpu, size_t i,
+                   size_t recrusive_offset, size_t recrusive_offset_finished,
+                   size_t rest_gpu_num, size_t n, ncclDataType_t nccl_type,
+                   size_t lda, size_t ldz, thrust::device_ptr<T> panel_Z_ptr,
+                   std::vector<size_t>& gpu_start,
+                   std::vector<thrust::device_vector<T>>& gpu_work,
+                   std::vector<thrust::device_vector<T>>& gpu_oriA,
+                   std::vector<thrust::device_vector<T>>& z_recv,
+                   std::vector<cudaStream_t>& streams,
+                   std::vector<ncclComm_t>& comms) {
+    auto omp_gpu_index = gpu_index + omp_index;
+    cudaSetDevice(omp_gpu_index);
+    ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m, nccl_type,
+              gpu_index, comms[omp_gpu_index], streams[omp_gpu_index]);
+    cudaStreamSynchronize(streams[omp_gpu_index]);
+
+    auto& panel_handle = cublas_handle_mg[omp_gpu_index];
+    auto oriA_panel =
+        gpu_oriA[omp_gpu_index].data() + i + recrusive_offset_finished;
+    auto z_panel_rows = occupy_each_gpu;
+
+    auto aw_panel = gpu_work[omp_gpu_index].data() + n * nb;
+
+    if (omp_index == 0) {
+        oriA_panel = gpu_oriA[omp_gpu_index].data() + recrusive_offset -
+                     gpu_start[omp_gpu_index] + i + i * lda;
+        z_panel_rows = panel_m - occupy_each_gpu * (rest_gpu_num - 1);
+    }
+
+    if (z_panel_rows > 0) {
+        try {
+            matrix_ops::gemm(panel_handle, z_panel_rows, b, panel_m, (T)1,
+                             oriA_panel, lda, true,
+                             gpu_work[omp_gpu_index].data(), panel_m, false,
+                             (T)0, aw_panel, z_panel_rows);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                fmt::format("here aw gemm error exception: {}", e.what()));
+        } catch (...) {
+            throw std::runtime_error(
+                "here aw gemm error: an unknown exception "
+                "occurred");
+        }
+        if (omp_index == 0) {
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                aw_panel, z_panel_rows, panel_Z_ptr, ldz, z_panel_rows, b);
+        } else {
+            // send aw to buffer
+            ncclGroupStart();
+            ncclSend(aw_panel.get(), z_panel_rows * b, nccl_type, gpu_index,
+                     comms[omp_gpu_index], streams[omp_gpu_index]);
+            cudaStreamSynchronize(streams[omp_gpu_index]);
+            ncclRecv(z_recv[omp_index - 1].data().get(), z_panel_rows * b,
+                     nccl_type, omp_gpu_index, comms[gpu_index],
+                     streams[gpu_index]);
+            cudaStreamSynchronize(streams[gpu_index]);
+            ncclGroupEnd();
+            // current card copy
+            auto row_finished = (omp_index - 1) * occupy_each_gpu + panel_m -
+                                occupy_each_gpu * (rest_gpu_num - 1);
+            cudaSetDevice(gpu_index);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                z_recv[omp_index - 1].data(), z_panel_rows,
+                panel_Z_ptr + row_finished, ldz, z_panel_rows, b);
+        }
+    }
 }
 
 template <typename T>
@@ -139,72 +210,12 @@ void sy2sb_recrusive(size_t recrusive_depth,
 #pragma omp parallel num_threads(rest_gpu_num)
             {
                 auto omp_index = omp_get_thread_num();
-                auto omp_gpu_index = gpu_index + omp_index;
 
-                cudaSetDevice(omp_gpu_index);
-                ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m,
-                          nccl_type, gpu_index, comms[omp_gpu_index],
-                          streams[omp_gpu_index]);
-                cudaStreamSynchronize(streams[omp_gpu_index]);
-
-                auto& panel_handle = cublas_handle_mg[omp_gpu_index];
-                auto oriA_panel = gpu_oriA[omp_gpu_index].data() + i +
-                                  recrusive_offset_finished;
-                auto z_panel_rows = occupy_each_gpu;
-
-                auto aw_panel = gpu_work[omp_gpu_index].data() + n * nb;
-
-                if (omp_index == 0) {
-                    oriA_panel = gpu_oriA[omp_gpu_index].data() +
-                                 recrusive_offset - gpu_start[omp_gpu_index] +
-                                 i + i * lda;
-                    z_panel_rows =
-                        panel_m - occupy_each_gpu * (rest_gpu_num - 1);
-                }
-
-                if (z_panel_rows > 0) {
-                    try {
-                        matrix_ops::gemm(panel_handle, z_panel_rows, b, panel_m,
-                                         (T)1, oriA_panel, lda, true,
-                                         gpu_work[omp_gpu_index].data(),
-                                         panel_m, false, (T)0, aw_panel,
-                                         z_panel_rows);
-                    } catch (const std::exception& e) {
-                        throw std::runtime_error(fmt::format(
-                            "here aw gemm error exception: {}", e.what()));
-                    } catch (...) {
-                        throw std::runtime_error(
-                            "here aw gemm error: an unknown exception "
-                            "occurred");
-                    }
-                    if (omp_index == 0) {
-                        matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                                thrust::device_ptr<T>, T>(
-                            aw_panel, z_panel_rows, panel_Z_ptr, ldz,
-                            z_panel_rows, b);
-                    } else {
-                        // send aw to buffer
-                        ncclGroupStart();
-                        ncclSend(aw_panel.get(), z_panel_rows * b, nccl_type,
-                                 gpu_index, comms[omp_gpu_index],
-                                 streams[omp_gpu_index]);
-                        cudaStreamSynchronize(streams[omp_gpu_index]);
-                        ncclRecv(z_recv[omp_index - 1].data().get(),
-                                 z_panel_rows * b, nccl_type, omp_gpu_index,
-                                 comms[gpu_index], streams[gpu_index]);
-                        cudaStreamSynchronize(streams[gpu_index]);
-                        ncclGroupEnd();
-                        // current card copy
-                        auto row_finished =
-                            (omp_index - 1) * occupy_each_gpu + panel_m -
-                            occupy_each_gpu * (rest_gpu_num - 1);
-                        cudaSetDevice(gpu_index);
-                        matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                                thrust::device_ptr<T>, T>(
-                            z_recv[omp_index - 1].data(), z_panel_rows,
-                            panel_Z_ptr + row_finished, ldz, z_panel_rows, b);
-                    }
-                }
+                computeAwMgpu(cublas_handle_mg, omp_index, gpu_index, panel_m,
+                              nb, b, occupy_each_gpu, i, recrusive_offset,
+                              recrusive_offset_finished, rest_gpu_num, n,
+                              nccl_type, lda, ldz, panel_Z_ptr, gpu_start,
+                              gpu_work, gpu_oriA, z_recv, streams, comms);
             }
         } else {
             // for single card, we just execute gemm
@@ -214,6 +225,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                              false, panel_W_ptr, ldw, false, (T)0, panel_Z_ptr,
                              ldz);
         }
+
         if (i == b) {
             // panel_tmp = panel_z^T * panel_z
             matrix_ops::gemm(handle, b, b, panel_m, (T)1, panel_W_ptr, ldw,
