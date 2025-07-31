@@ -105,29 +105,40 @@ void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
                 "here aw gemm error: an unknown exception "
                 "occurred");
         }
-        if (omp_index == 0) {
+    }
+    // 先做通信
+    ncclGroupStart();
+    if (omp_index != 0) {
+        auto gpu_id = gpu_index + omp_index;
+        ncclSend(aw_panel.get(), occupy_each_gpu * b, nccl_type, gpu_index,
+                 comms[gpu_id], streams[gpu_id]);
+        
+    } else {
+        for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
+            auto gpu_id = gpu_index + gpu_offset;
+            ncclRecv(z_recv[gpu_offset - 1].data().get(), occupy_each_gpu * b,
+                     nccl_type, gpu_id, comms[gpu_index], streams[gpu_index]);
+        }
+        
+    }
+    ncclGroupEnd();
+
+    cudaStreamSynchronize(streams[omp_gpu_index]);
+
+    if (omp_index == 0) {
+        if (z_panel_rows > 0) {
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
                 aw_panel, z_panel_rows, panel_Z_ptr, ldz, z_panel_rows, b);
-        } else {
-            // send aw to buffer
-            ncclGroupStart();
-            ncclSend(aw_panel.get(), z_panel_rows * b, nccl_type, gpu_index,
-                     comms[omp_gpu_index], streams[omp_gpu_index]);
-            cudaStreamSynchronize(streams[omp_gpu_index]);
-            ncclRecv(z_recv[omp_index - 1].data().get(), z_panel_rows * b,
-                     nccl_type, omp_gpu_index, comms[gpu_index],
-                     streams[gpu_index]);
-            cudaStreamSynchronize(streams[gpu_index]);
-            ncclGroupEnd();
-            // current card copy
-            auto row_finished = (omp_index - 1) * occupy_each_gpu + panel_m -
+        }
+
+        for (auto index = 1; index < rest_gpu_num; index++) {
+            auto row_finished = (index - 1) * occupy_each_gpu + panel_m -
                                 occupy_each_gpu * (rest_gpu_num - 1);
-            cudaSetDevice(gpu_index);
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
-                z_recv[omp_index - 1].data(), z_panel_rows,
-                panel_Z_ptr + row_finished, ldz, z_panel_rows, b);
+                z_recv[index - 1].data(), occupy_each_gpu,
+                panel_Z_ptr + row_finished, ldz, occupy_each_gpu, b);
         }
     }
 }
@@ -456,8 +467,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
                     gpu_start[tail_gpu_start_index],
                 lda, sub_matrix_n, sub_matrix_n);
         } else {
-            util::Logger::println("卡 {} -> 卡 {}", gpu_index,
-                                  tail_gpu_start_index);
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
                 Y + nb, lda, gpu_work[gpu_index].data(), sub_matrix_n,
