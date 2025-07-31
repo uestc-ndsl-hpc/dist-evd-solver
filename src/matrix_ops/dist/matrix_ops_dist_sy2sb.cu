@@ -71,11 +71,12 @@ void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
                    std::vector<thrust::device_vector<T>>& gpu_oriA,
                    std::vector<thrust::device_vector<T>>& z_recv,
                    std::vector<cudaStream_t>& streams,
-                   std::vector<ncclComm_t>& comms) {
+                   std::vector<ncclComm_t>& comms,
+                   std::vector<ncclComm_t>& comms_bcast) {
     auto omp_gpu_index = gpu_index + omp_index;
     cudaSetDevice(omp_gpu_index);
-    ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m, nccl_type,
-              gpu_index, comms[omp_gpu_index], streams[omp_gpu_index]);
+    ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m, nccl_type, 0,
+              comms_bcast[omp_gpu_index], streams[omp_gpu_index]);
     cudaStreamSynchronize(streams[omp_gpu_index]);
 
     auto& panel_handle = cublas_handle_mg[omp_gpu_index];
@@ -106,20 +107,18 @@ void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
                 "occurred");
         }
     }
-    // 先做通信
     ncclGroupStart();
     if (omp_index != 0) {
         auto gpu_id = gpu_index + omp_index;
         ncclSend(aw_panel.get(), occupy_each_gpu * b, nccl_type, gpu_index,
                  comms[gpu_id], streams[gpu_id]);
-        
+
     } else {
         for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
             auto gpu_id = gpu_index + gpu_offset;
             ncclRecv(z_recv[gpu_offset - 1].data().get(), occupy_each_gpu * b,
                      nccl_type, gpu_id, comms[gpu_index], streams[gpu_index]);
         }
-        
     }
     ncclGroupEnd();
 
@@ -169,7 +168,6 @@ void sy2sb_recrusive(size_t recrusive_depth,
 
     auto recrusive_offset = recrusive_depth * (nb + nb * lda);
     auto gpu_index = computeGPUIndex4Panel(recrusive_offset, gpu_start);
-    cudaSetDevice(gpu_index);
     auto recrusive_offset_finished = nb * recrusive_depth;
     auto A = gpu_A[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
     auto W = gpu_W[gpu_index].data() + recrusive_offset - gpu_start[gpu_index];
@@ -181,6 +179,22 @@ void sy2sb_recrusive(size_t recrusive_depth,
     auto ldwork = nb;
     auto& handle = cublas_handle_mg[gpu_index];
     auto& cusolverHandle = cusolver_handle_mg[gpu_index];
+
+    // create sub communicator
+    std::vector<ncclComm_t> bcast_comms(gpu_num, nullptr);
+#pragma omp parallel num_threads(gpu_num)
+    {
+        int my_gpu_id = omp_get_thread_num();
+        cudaSetDevice(my_gpu_id);
+
+        int color = (my_gpu_id >= gpu_index) ? 1 : NCCL_SPLIT_NOCOLOR;
+        int key = my_gpu_id;
+
+        ncclCommSplit(comms[my_gpu_id], color, key, &bcast_comms[my_gpu_id],
+                      NULL);
+    }
+
+    cudaSetDevice(gpu_index);
 
     for (auto i = b; i <= nb && i < (n - recrusive_offset_finished); i += b) {
         auto panel_m = n - recrusive_offset_finished - i;
@@ -226,7 +240,8 @@ void sy2sb_recrusive(size_t recrusive_depth,
                               nb, b, occupy_each_gpu, i, recrusive_offset,
                               recrusive_offset_finished, rest_gpu_num, n,
                               nccl_type, lda, ldz, panel_Z_ptr, gpu_start,
-                              gpu_work, gpu_oriA, z_recv, streams, comms);
+                              gpu_work, gpu_oriA, z_recv, streams, comms,
+                              bcast_comms);
             }
         } else {
             // for single card, we just execute gemm
@@ -332,10 +347,10 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 if (gpu_id == gpu_index) {
                     z_bcast = z_send.data();
                 }
-                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type,
-                          gpu_index, comms[gpu_id], streams[gpu_id]);
+                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type, 0,
+                          bcast_comms[gpu_id], streams[gpu_id]);
                 ncclBcast(gpu_work[gpu_id].data().get(), sub_matrix_n * nb,
-                          nccl_type, gpu_index, comms[gpu_id], streams[gpu_id]);
+                          nccl_type, 0, bcast_comms[gpu_id], streams[gpu_id]);
                 auto syr2k_panel_col = occupy_each_gpu;
                 auto& syr2k_panel_handle = cublas_handle_mg[gpu_id];
                 auto syr2k_panel_oriA_ptr =
@@ -483,11 +498,11 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 if (gpu_id == gpu_index) {
                     z_bcast = z_send.data();
                 }
-                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type,
-                          gpu_index, comms[gpu_id], streams[gpu_id]);
+                ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type, 0,
+                          bcast_comms[gpu_id], streams[gpu_id]);
                 cudaStreamSynchronize(streams[gpu_id]);
                 ncclBcast(gpu_work[gpu_id].data().get(), sub_matrix_n * nb,
-                          nccl_type, gpu_index, comms[gpu_id], streams[gpu_id]);
+                          nccl_type, 0, bcast_comms[gpu_id], streams[gpu_id]);
                 cudaStreamSynchronize(streams[gpu_id]);
                 if (gpu_id != gpu_index) {
                     auto syr2k_panel_col = occupy_each_gpu;
@@ -515,6 +530,15 @@ void sy2sb_recrusive(size_t recrusive_depth,
                         syr2k_panel_col);
                 }
             }
+        }
+    }
+
+#pragma omp parallel num_threads(gpu_num)
+    {
+        int my_gpu_id = omp_get_thread_num();
+        if (bcast_comms[my_gpu_id] != nullptr) {
+            cudaSetDevice(my_gpu_id);
+            ncclCommDestroy(bcast_comms[my_gpu_id]);
         }
     }
 
