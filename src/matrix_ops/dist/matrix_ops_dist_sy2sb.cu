@@ -133,8 +133,8 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 panel_W_ptr, ldw, gpu_work[gpu_index].data(), panel_m, panel_m,
                 b);
             std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
-            for (int i = 0; i < rest_gpu_num - 1; i++) {
-                z_recv[i].resize(occupy_each_gpu * b);
+            for (int index = 0; index < rest_gpu_num - 1; index++) {
+                z_recv[index].resize(occupy_each_gpu * b);
             }
 #pragma omp parallel num_threads(rest_gpu_num)
             {
@@ -145,11 +145,14 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m,
                           nccl_type, gpu_index, comms[omp_gpu_index],
                           streams[omp_gpu_index]);
+                cudaStreamSynchronize(streams[omp_gpu_index]);
 
                 auto& panel_handle = cublas_handle_mg[omp_gpu_index];
                 auto oriA_panel = gpu_oriA[omp_gpu_index].data() + i +
                                   recrusive_offset_finished;
                 auto z_panel_rows = occupy_each_gpu;
+
+                auto aw_panel = gpu_work[omp_gpu_index].data() + n * nb;
 
                 if (omp_index == 0) {
                     oriA_panel = gpu_oriA[omp_gpu_index].data() +
@@ -158,27 +161,38 @@ void sy2sb_recrusive(size_t recrusive_depth,
                     z_panel_rows =
                         panel_m - occupy_each_gpu * (rest_gpu_num - 1);
                 }
-                thrust::device_vector<T> aw_panel(z_panel_rows * b);
 
                 if (z_panel_rows > 0) {
-                    matrix_ops::gemm(
-                        panel_handle, z_panel_rows, b, panel_m, (T)1,
-                        oriA_panel, lda, true, gpu_work[omp_gpu_index].data(),
-                        panel_m, false, (T)0, aw_panel.data(), z_panel_rows);
+                    try {
+                        matrix_ops::gemm(panel_handle, z_panel_rows, b, panel_m,
+                                         (T)1, oriA_panel, lda, true,
+                                         gpu_work[omp_gpu_index].data(),
+                                         panel_m, false, (T)0, aw_panel,
+                                         z_panel_rows);
+                    } catch (const std::exception& e) {
+                        throw std::runtime_error(fmt::format(
+                            "here aw gemm error exception: {}", e.what()));
+                    } catch (...) {
+                        throw std::runtime_error(
+                            "here aw gemm error: an unknown exception "
+                            "occurred");
+                    }
                     if (omp_index == 0) {
                         matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                                 thrust::device_ptr<T>, T>(
-                            aw_panel.data(), z_panel_rows, panel_Z_ptr, ldz,
+                            aw_panel, z_panel_rows, panel_Z_ptr, ldz,
                             z_panel_rows, b);
                     } else {
                         // send aw to buffer
                         ncclGroupStart();
-                        ncclSend(aw_panel.data().get(), z_panel_rows * b,
-                                 nccl_type, gpu_index, comms[omp_gpu_index],
+                        ncclSend(aw_panel.get(), z_panel_rows * b, nccl_type,
+                                 gpu_index, comms[omp_gpu_index],
                                  streams[omp_gpu_index]);
-                        ncclRecv(gpu_work[omp_index - 1].data().get(),
+                        cudaStreamSynchronize(streams[omp_gpu_index]);
+                        ncclRecv(z_recv[omp_index - 1].data().get(),
                                  z_panel_rows * b, nccl_type, omp_gpu_index,
                                  comms[gpu_index], streams[gpu_index]);
+                        cudaStreamSynchronize(streams[gpu_index]);
                         ncclGroupEnd();
                         // current card copy
                         auto row_finished =
@@ -187,7 +201,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                         cudaSetDevice(gpu_index);
                         matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                                 thrust::device_ptr<T>, T>(
-                            gpu_work[omp_index - 1].data(), z_panel_rows,
+                            z_recv[omp_index - 1].data(), z_panel_rows,
                             panel_Z_ptr + row_finished, ldz, z_panel_rows, b);
                     }
                 }
@@ -347,17 +361,32 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
 
             try {
-                ncclGroupStart();
+#pragma omp parallel num_threads(2)
+                {
+                    ncclGroupStart();
 
-                ncclSend(gpu_work[gpu_index].data().get(), sub_matrix_n * nb,
-                         nccl_type, tail_gpu_start_index, comms[gpu_index],
-                         streams[gpu_index]);
-                ncclRecv(gpu_work[tail_gpu_start_index].data().get(),
-                         sub_matrix_n * nb, nccl_type, gpu_index,
-                         comms[tail_gpu_start_index],
-                         streams[tail_gpu_start_index]);
+                    if (omp_get_thread_num() == 0) {
+                        ncclSend(gpu_work[gpu_index].data().get(),
+                                 sub_matrix_n * nb, nccl_type,
+                                 tail_gpu_start_index, comms[gpu_index],
+                                 streams[gpu_index]);
+                    } else {
+                        cudaSetDevice(tail_gpu_start_index);
+                        ncclRecv(gpu_work[tail_gpu_start_index].data().get(),
+                                 sub_matrix_n * nb, nccl_type, gpu_index,
+                                 comms[tail_gpu_start_index],
+                                 streams[tail_gpu_start_index]);
+                        cudaSetDevice(gpu_index);
+                    }
 
-                ncclGroupEnd();
+                    ncclGroupEnd();
+
+                    if (omp_get_thread_num() == 0) {
+                        cudaStreamSynchronize(streams[gpu_index]);
+                    } else {
+                        cudaStreamSynchronize(streams[tail_gpu_start_index]);
+                    }
+                }
             } catch (...) {
                 throw std::runtime_error(fmt::format(
                     "NCCL error because of the Y send/recv sub_matrix_n {} "
@@ -366,17 +395,30 @@ void sy2sb_recrusive(size_t recrusive_depth,
             }
 
             try {
-                ncclGroupStart();
+#pragma omp parallel num_threads(2)
+                {
+                    ncclGroupStart();
+                    if (omp_get_thread_num() == 0) {
+                        ncclSend(z_send.data().get(), sub_matrix_n * nb,
+                                 nccl_type, tail_gpu_start_index,
+                                 comms[gpu_index], streams[gpu_index]);
+                    } else {
+                        cudaSetDevice(tail_gpu_start_index);
+                        ncclRecv(gpu_Z[tail_gpu_start_index].data().get(),
+                                 sub_matrix_n * nb, nccl_type, gpu_index,
+                                 comms[tail_gpu_start_index],
+                                 streams[tail_gpu_start_index]);
+                        cudaSetDevice(gpu_index);
+                    }
 
-                ncclSend(z_send.data().get(), sub_matrix_n * nb, nccl_type,
-                         tail_gpu_start_index, comms[gpu_index],
-                         streams[gpu_index]);
-                ncclRecv(gpu_Z[tail_gpu_start_index].data().get(),
-                         sub_matrix_n * nb, nccl_type, gpu_index,
-                         comms[tail_gpu_start_index],
-                         streams[tail_gpu_start_index]);
+                    ncclGroupEnd();
 
-                ncclGroupEnd();
+                    if (omp_get_thread_num() == 0) {
+                        cudaStreamSynchronize(streams[gpu_index]);
+                    } else {
+                        cudaStreamSynchronize(streams[tail_gpu_start_index]);
+                    }
+                }
             } catch (...) {
                 throw std::runtime_error(fmt::format(
                     "NCCL error because of the Z send/recv sub_matrix_n {} "
@@ -422,8 +464,10 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 }
                 ncclBcast(z_bcast.get(), sub_matrix_n * nb, nccl_type,
                           gpu_index, comms[gpu_id], streams[gpu_id]);
+                cudaStreamSynchronize(streams[gpu_id]);
                 ncclBcast(gpu_work[gpu_id].data().get(), sub_matrix_n * nb,
                           nccl_type, gpu_index, comms[gpu_id], streams[gpu_id]);
+                cudaStreamSynchronize(streams[gpu_id]);
                 if (gpu_id != gpu_index) {
                     auto syr2k_panel_col = occupy_each_gpu;
                     auto& syr2k_panel_handle = cublas_handle_mg[gpu_id];
