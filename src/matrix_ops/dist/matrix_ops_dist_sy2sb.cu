@@ -341,6 +341,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
 #pragma omp parallel num_threads(rest_gpu_num)
             {
+                auto omp_id = omp_get_thread_num();
                 auto gpu_id = omp_get_thread_num() + gpu_index;
                 cudaSetDevice(gpu_id);
                 auto z_bcast = gpu_Z[gpu_id].data();
@@ -358,8 +359,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 auto dst_A_ptr = gpu_A[gpu_id].data() + (n - sub_matrix_n);
 
                 auto zy_panel_offset =
-                    sub_matrix_n - (rest_gpu_num - 1) * occupy_each_gpu +
-                    (gpu_id - gpu_index - 1) * occupy_each_gpu;
+                    sub_matrix_n - (rest_gpu_num - omp_id) * occupy_each_gpu;
 
                 if (gpu_id == gpu_index) {
                     syr2k_panel_col =
@@ -492,6 +492,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
                 Z + nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n, nb);
 #pragma omp parallel num_threads(rest_gpu_num)
             {
+                auto omp_id = omp_get_thread_num();
                 auto gpu_id = omp_get_thread_num() + gpu_index;
                 cudaSetDevice(gpu_id);
                 auto z_bcast = gpu_Z[gpu_id].data();
@@ -511,7 +512,9 @@ void sy2sb_recrusive(size_t recrusive_depth,
                         gpu_oriA[gpu_id].data() + (n - sub_matrix_n);
                     auto dst_A_ptr = gpu_A[gpu_id].data() + (n - sub_matrix_n);
 
-                    auto zy_panel_offset = (gpu_id - gpu_index - 1) * nb;
+                    auto zy_panel_offset =
+                        sub_matrix_n -
+                        (rest_gpu_num - omp_id) * occupy_each_gpu;
 
                     matrix_ops::gemm(
                         syr2k_panel_handle, sub_matrix_n, syr2k_panel_col, nb,

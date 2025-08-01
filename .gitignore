@@ -6,5 +6,7 @@ ref
 *.sbatch
 log
 .cursor
+.claude
 .sbatch
 build_release
+CLAUDE.md
