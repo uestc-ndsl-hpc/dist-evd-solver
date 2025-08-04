@@ -72,7 +72,7 @@ void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
                    std::vector<thrust::device_vector<T>>& z_recv,
                    std::vector<cudaStream_t>& streams,
                    std::vector<ncclComm_t>& comms,
-                   std::vector<ncclComm_t>& comms_bcast) {
+                   const std::vector<ncclComm_t>& comms_bcast) {
     auto omp_gpu_index = gpu_index + omp_index;
     cudaSetDevice(omp_gpu_index);
     ncclBcast(gpu_work[omp_gpu_index].data().get(), b * panel_m, nccl_type, 0,
@@ -143,22 +143,22 @@ void computeAwMgpu(std::vector<common::CublasHandle>& cublas_handle_mg,
 }
 
 template <typename T>
-void sy2sb_recrusive(size_t recrusive_depth,
-                     std::vector<common::CublasHandle>& cublas_handle_mg,
-                     std::vector<common::CusolverDnHandle>& cusolver_handle_mg,
-                     const common::CublasXtHandle& cublasXtHandle, size_t n,
-                     T* oriA_host, size_t lda, T* Y_host, size_t ldy, T* W_host,
-                     size_t ldw, size_t nb, size_t b, size_t gpu_num,
-                     size_t occupy_each_gpu, std::vector<size_t>& gpu_start,
-                     std::vector<thrust::device_vector<T>>& gpu_A,
-                     std::vector<thrust::device_vector<T>>& gpu_W,
-                     std::vector<thrust::device_vector<T>>& gpu_Y,
-                     std::vector<thrust::device_vector<T>>& gpu_R,
-                     std::vector<thrust::device_vector<T>>& gpu_Z,
-                     std::vector<thrust::device_vector<T>>& gpu_work,
-                     std::vector<thrust::device_vector<T>>& gpu_oriA,
-                     std::vector<cudaStream_t>& streams,
-                     std::vector<ncclComm_t>& comms) {
+void sy2sb_recrusive(
+    size_t recrusive_depth, std::vector<common::CublasHandle>& cublas_handle_mg,
+    std::vector<common::CusolverDnHandle>& cusolver_handle_mg,
+    const common::CublasXtHandle& cublasXtHandle, size_t n, T* oriA_host,
+    size_t lda, T* Y_host, size_t ldy, T* W_host, size_t ldw, size_t nb,
+    size_t b, size_t gpu_num, size_t occupy_each_gpu,
+    std::vector<size_t>& gpu_start,
+    std::vector<thrust::device_vector<T>>& gpu_A,
+    std::vector<thrust::device_vector<T>>& gpu_W,
+    std::vector<thrust::device_vector<T>>& gpu_Y,
+    std::vector<thrust::device_vector<T>>& gpu_R,
+    std::vector<thrust::device_vector<T>>& gpu_Z,
+    std::vector<thrust::device_vector<T>>& gpu_work,
+    std::vector<thrust::device_vector<T>>& gpu_oriA,
+    std::vector<cudaStream_t>& streams, std::vector<ncclComm_t>& comms,
+    const std::vector<std::vector<ncclComm_t>>& comm_patterns_by_idx) {
     auto nccl_type = ncclFloat32;
     if constexpr (std::is_same_v<T, float>) {
         nccl_type = ncclFloat32;
@@ -181,18 +181,7 @@ void sy2sb_recrusive(size_t recrusive_depth,
     auto& cusolverHandle = cusolver_handle_mg[gpu_index];
 
     // create sub communicator
-    std::vector<ncclComm_t> bcast_comms(gpu_num, nullptr);
-#pragma omp parallel num_threads(gpu_num)
-    {
-        int my_gpu_id = omp_get_thread_num();
-        cudaSetDevice(my_gpu_id);
-
-        int color = (my_gpu_id >= gpu_index) ? 1 : NCCL_SPLIT_NOCOLOR;
-        int key = my_gpu_id;
-
-        ncclCommSplit(comms[my_gpu_id], color, key, &bcast_comms[my_gpu_id],
-                      NULL);
-    }
+    auto& bcast_comms = comm_patterns_by_idx.at(gpu_index);
 
     cudaSetDevice(gpu_index);
 
@@ -536,21 +525,12 @@ void sy2sb_recrusive(size_t recrusive_depth,
         }
     }
 
-#pragma omp parallel num_threads(gpu_num)
-    {
-        int my_gpu_id = omp_get_thread_num();
-        if (bcast_comms[my_gpu_id] != nullptr) {
-            cudaSetDevice(my_gpu_id);
-            ncclCommDestroy(bcast_comms[my_gpu_id]);
-        }
-    }
-
-    internal::sy2sb_recrusive(recrusive_depth + 1, cublas_handle_mg,
-                              cusolver_handle_mg, cublasXtHandle, n, oriA_host,
-                              lda, Y_host, ldy, W_host, ldw, nb, b, gpu_num,
-                              occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y,
-                              gpu_R, gpu_Z, gpu_work, gpu_oriA, streams, comms);
-}  // namespace internal
+    internal::sy2sb_recrusive(
+        recrusive_depth + 1, cublas_handle_mg, cusolver_handle_mg,
+        cublasXtHandle, n, oriA_host, lda, Y_host, ldy, W_host, ldw, nb, b,
+        gpu_num, occupy_each_gpu, gpu_start, gpu_A, gpu_W, gpu_Y, gpu_R, gpu_Z,
+        gpu_work, gpu_oriA, streams, comms, comm_patterns_by_idx);
+}
 }  // namespace internal
 
 template <typename T>
@@ -641,10 +621,51 @@ void sy2sb(const common::CublasHandle& handle, size_t n, T* A, size_t lda, T* W,
 
     cublasXtDeviceSelect(cublasXtHandle, gpu_num, gpu_used.data());
 
-    internal::sy2sb_recrusive(
-        0, gpu_cublas_handle, gpu_cusolverdn_handle, cublasXtHandle, n, A, lda,
-        Y, ldy, W, ldw, nb, b, gpu_num, occupy_each_gpu, gpu_start, gpu_A,
-        gpu_W, gpu_Y, gpu_R, gpu_Z, gpu_work, gpu_oriA, gpu_stream, comms);
+    std::vector<std::vector<ncclComm_t>> comm_patterns(gpu_num);
+
+    for (size_t index_pattern = 0; index_pattern < gpu_num; ++index_pattern) {
+        comm_patterns[index_pattern].resize(gpu_num, nullptr);
+
+#pragma omp parallel num_threads(gpu_num)
+        {
+            int my_gpu_id = omp_get_thread_num();
+            cudaSetDevice(my_gpu_id);
+
+            int color = (my_gpu_id >= index_pattern) ? 1 : NCCL_SPLIT_NOCOLOR;
+            int key = my_gpu_id;
+
+            ncclCommSplit(comms[my_gpu_id], color, key,
+                          &comm_patterns[index_pattern][my_gpu_id], NULL);
+        }
+    }
+
+    util::Logger::tic("sy2sb dist");
+
+    internal::sy2sb_recrusive(0, gpu_cublas_handle, gpu_cusolverdn_handle,
+                              cublasXtHandle, n, A, lda, Y, ldy, W, ldw, nb, b,
+                              gpu_num, occupy_each_gpu, gpu_start, gpu_A, gpu_W,
+                              gpu_Y, gpu_R, gpu_Z, gpu_work, gpu_oriA,
+                              gpu_stream, comms, comm_patterns);
+
+    for (size_t i = 0; i < gpu_num; ++i) {
+        cudaSetDevice(i);
+        cudaDeviceSynchronize();
+    }
+
+    cudaSetDevice(init_device);
+
+    util::Logger::toc("sy2sb dist");
+
+    for (size_t index_pattern = 0; index_pattern < gpu_num; ++index_pattern) {
+#pragma omp parallel num_threads(gpu_num)
+        {
+            int my_gpu_id = omp_get_thread_num();
+            if (comm_patterns[index_pattern][my_gpu_id] != nullptr) {
+                cudaSetDevice(my_gpu_id);
+                ncclCommDestroy(comm_patterns[index_pattern][my_gpu_id]);
+            }
+        }
+    }
 
     for (auto i = (size_t)0; i < gpu_num; i++) {
         cudaSetDevice(i);
