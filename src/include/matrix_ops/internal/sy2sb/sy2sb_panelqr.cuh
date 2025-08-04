@@ -15,33 +15,27 @@ namespace internal {
 namespace sy2sb {
 
 /**
- * @brief functor for identity minus A
- *
- * @tparam T
+ * @brief functor to compute A - I
  */
 template <typename T>
-struct identity_minus_A_functor {
-    const size_t m;
-    const size_t n;
-    const size_t lda;
+struct identity_minus_A_functor_2d {
+    T* A_ptr_;
+    size_t m_;
+    size_t lda_;
 
-    identity_minus_A_functor(size_t m, size_t n, size_t lda)
-        : m(m), n(n), lda(lda) {}
+    identity_minus_A_functor_2d(thrust::device_ptr<T> A, size_t m, size_t lda)
+        : A_ptr_(thrust::raw_pointer_cast(A)), m_(m), lda_(lda) {}
 
-    __host__ __device__ T operator()(const thrust::tuple<T, size_t>& t) const {
-        const auto val = thrust::get<0>(t);
-        const auto idx = thrust::get<1>(t);
-        const auto col = idx / lda;
-        const auto row = idx % lda;
+    __device__ void operator()(const size_t& k) const {
+        size_t row = k % m_;
+        size_t col = k / m_;
 
-        if (col >= n || row >= m) {
-            return val;
-        }
+        size_t physical_index = col * lda_ + row;
 
         if (row == col) {
-            return static_cast<T>(1.0) - val;
+            A_ptr_[physical_index] = 1.0 - A_ptr_[physical_index];
         } else {
-            return -val;
+            A_ptr_[physical_index] = -A_ptr_[physical_index];
         }
     }
 };

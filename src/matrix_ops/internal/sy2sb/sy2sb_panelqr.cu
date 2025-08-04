@@ -46,13 +46,17 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
     // matrix_ops::print(A_inout, m, n, lda, "A_inout before get L");
 
     // extract the lower triangular part of the matrix
-    thrust::transform(
-        thrust::device,
-        thrust::make_zip_iterator(
-            thrust::make_tuple(A_inout, thrust::counting_iterator<size_t>(0))),
-        thrust::make_zip_iterator(thrust::make_tuple(
-            A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
-        A_inout, extract_L_functor<T>(m, n, lda));
+    try {
+        thrust::transform(
+            thrust::device,
+            thrust::make_zip_iterator(thrust::make_tuple(
+                A_inout, thrust::counting_iterator<size_t>(0))),
+            thrust::make_zip_iterator(thrust::make_tuple(
+                A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
+            A_inout, extract_L_functor<T>(m, n, lda));
+    } catch (...) {
+        throw std::runtime_error("Error in panelQR get_L.");
+    }
 
     // matrix_ops::print(A_inout, m, n, lda, "A_inout after get L");
 }
@@ -66,15 +70,16 @@ void panelQR(const common::CublasHandle& cublasHandle,
     // tsqr, A_inout <- Q R
     matrix_ops::tsqr<T>(cublasHandle, m, n, A_inout, R, lda, ldr);
 
-
-    // A <- I - A
-    thrust::transform(
-        thrust::device,
-        thrust::make_zip_iterator(
-            thrust::make_tuple(A_inout, thrust::counting_iterator<size_t>(0))),
-        thrust::make_zip_iterator(thrust::make_tuple(
-            A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
-        A_inout, identity_minus_A_functor<T>(m, n, lda));
+    try {
+        size_t num_elements = m * n;
+        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(num_elements),
+                         identity_minus_A_functor_2d<T>(A_inout, m, lda));
+    } catch (std::exception& e) {
+        throw std::runtime_error(
+            fmt::format("Error in panelQR I-Q \n n = {} lda = {} \n error: {}",
+                        n, lda, e.what()));
+    }
 
     // matrix_ops::print(A_inout, m, n, lda, "A_inout after I-Q");
 

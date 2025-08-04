@@ -59,7 +59,7 @@ void run_workflow_sy2sb_dist(size_t n, bool validate, int gpu_num) {
     auto W_h = thrust::host_vector<T>(n * n);
 
     matrix_ops::dist::sy2sb(handle, n, A_h.data(), n, W_h.data(), n, Y_h.data(),
-                            n, 32, 16, gpu_num);
+                            n, 1024, 32, gpu_num);
 
     if (util::Logger::is_verbose() && n <= 256) {
         matrix_ops::print(A_h.data(), n, n, n, "A");
