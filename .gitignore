@@ -8,5 +8,6 @@ log
 .cursor
 .claude
 .sbatch
+.clangd
 build_release
 CLAUDE.md
