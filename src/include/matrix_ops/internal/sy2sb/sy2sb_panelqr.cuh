@@ -41,6 +41,32 @@ struct identity_minus_A_functor_2d {
 };
 
 /**
+ * @brief functor to extract L
+ */
+template <typename T>
+struct extract_L_functor_2d {
+    T* A_ptr_;
+    size_t m_;
+    size_t lda_;
+
+    extract_L_functor_2d(thrust::device_ptr<T> A, size_t m, size_t lda)
+        : A_ptr_(thrust::raw_pointer_cast(A)), m_(m), lda_(lda) {}
+
+    __device__ void operator()(const size_t& k) const {
+        size_t row = k % m_;
+        size_t col = k / m_;
+
+        size_t physical_index = col * lda_ + row;
+
+        if (row == col) {
+            A_ptr_[physical_index] = 1.0;
+        } else if (row < col) {
+            A_ptr_[physical_index] = 0.0;
+        }
+    }
+};
+
+/**
  * @brief functor for extract Lower
  *
  * @tparam T

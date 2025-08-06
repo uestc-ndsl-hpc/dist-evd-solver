@@ -47,15 +47,14 @@ void getIminusQL4panelQR(const common::CusolverDnHandle& handle, size_t m,
 
     // extract the lower triangular part of the matrix
     try {
-        thrust::transform(
-            thrust::device,
-            thrust::make_zip_iterator(thrust::make_tuple(
-                A_inout, thrust::counting_iterator<size_t>(0))),
-            thrust::make_zip_iterator(thrust::make_tuple(
-                A_inout + n * lda, thrust::counting_iterator<size_t>(n * lda))),
-            A_inout, extract_L_functor<T>(m, n, lda));
-    } catch (...) {
-        throw std::runtime_error("Error in panelQR get_L.");
+        size_t num_elements = m * n;
+        thrust::for_each(thrust::device, thrust::counting_iterator<size_t>(0),
+                         thrust::counting_iterator<size_t>(num_elements),
+                         extract_L_functor_2d<T>(A_inout, m, lda));
+    } catch (std::exception& e) {
+        throw std::runtime_error(fmt::format(
+            "Error in panelQR extract L \n n = {} lda = {} \n error: {}", n,
+            lda, e.what()));
     }
 
     // matrix_ops::print(A_inout, m, n, lda, "A_inout after get L");

@@ -3,5 +3,6 @@ CompileFlags:
         - '-forward-unknown-to-host-compiler'
         - '--generate-code*'
         - '-arch=*'
+        - '-Xcompiler=-fopenmp'
     Add:
         -  '--no-cuda-version-check'
