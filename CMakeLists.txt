@@ -42,6 +42,9 @@ FetchContent_MakeAvailable(fmt argh googletest)
 # --- 核心依赖 ---
 find_package(NVHPC REQUIRED)
 
+find_package(OpenMP REQUIRED)
+
+find_package(MPI REQUIRED)
 
 # --- 项目库定义 ---
 add_library(dist-evd-solver-lib
@@ -61,11 +64,10 @@ target_include_directories(dist-evd-solver-lib
         src/include
         src/include/common
         src/include/matrix_ops/internal/sy2sb
+    PRIVATE
+        ${MPI_CXX_INCLUDE_DIRS}
 )
 
-find_package(OpenMP REQUIRED)
-
-find_package(MPI REQUIRED)
 
 target_link_libraries(dist-evd-solver-lib
     PUBLIC
@@ -82,16 +84,19 @@ target_link_libraries(dist-evd-solver-lib
 )
 
 target_link_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
-target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
 
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver
     src/main.cu
+    src/workflow/workflow_tsqr.cu
+    src/workflow/workflow_sy2sb.cu
     src/workflow/workflow_sy2sb_dist.cu
+    src/workflow/workflow_sy2sb_mpi.cu
 )
 
 target_link_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
-target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
 
 target_link_libraries(dist-evd-solver
     PRIVATE

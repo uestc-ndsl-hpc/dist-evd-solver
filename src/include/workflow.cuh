@@ -10,3 +10,6 @@ void run_workflow_sy2sb(size_t n, bool validate);
 
 template <typename T>
 void run_workflow_sy2sb_dist(size_t n, bool validate, int gpu_num = 1);
+
+template <typename T>
+void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1);
