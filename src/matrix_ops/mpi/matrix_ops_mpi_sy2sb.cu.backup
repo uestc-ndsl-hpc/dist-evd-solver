@@ -1,0 +1,333 @@
+#include <mpi.h>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+
+#include <stdexcept>
+
+#include "fmt/format.h"
+#include "log.h"
+#include "matrix_ops.cuh"
+#include "matrix_ops_mpi.cuh"
+#include "sy2sb_panelqr.cuh"
+
+namespace matrix_ops {
+namespace mpi {
+
+// 构造函数实现
+MpiConfig::MpiConfig(int r, int s, int local_gpu, int total)
+    : rank(r), size(s), local_gpu_id(local_gpu), total_gpus(total) {}
+
+// MpiSy2sbContext 类方法实现
+template <typename T>
+MpiSy2sbContext<T>::MpiSy2sbContext(const MpiConfig& config, size_t matrix_n,
+                                    T* A, size_t lda_val, T* W, size_t ldw_val,
+                                    T* Y, size_t ldy_val, size_t nb_val,
+                                    size_t b_val)
+    : mpi_config(config),
+      n(matrix_n),
+      lda(lda_val),
+      ldw(ldw_val),
+      ldy(ldy_val),
+      nb(nb_val),
+      b(b_val),
+      A_host(A),
+      W_host(W),
+      Y_host(Y) {
+    // 计算分块信息
+    cols_per_process = n / mpi_config.size;
+    start_col = mpi_config.rank * cols_per_process;
+    local_matrix_size = cols_per_process * n;
+
+    initGpuResources();
+    initCommunication();
+    allocateGpuMemory();
+}
+
+template <typename T>
+MpiSy2sbContext<T>::~MpiSy2sbContext() {
+    cleanup();
+}
+
+// 工具函数：计算给定列偏移对应的MPI进程
+template <typename T>
+size_t MpiSy2sbContext<T>::computeProcessForColumn(size_t col_offset) const {
+    return col_offset / cols_per_process;
+}
+
+// 工具函数：判断给定列是否属于当前进程
+template <typename T>
+bool MpiSy2sbContext<T>::isLocalColumn(size_t col_offset) const {
+    return computeProcessForColumn(col_offset) ==
+           static_cast<size_t>(mpi_config.rank);
+}
+
+// 工具函数：获取本地列索引
+template <typename T>
+size_t MpiSy2sbContext<T>::getLocalColumnIndex(size_t global_col) const {
+    if (!isLocalColumn(global_col)) {
+        throw std::out_of_range("Column is not local to this process");
+    }
+    return global_col - start_col;
+}
+
+template <typename T>
+void MpiSy2sbContext<T>::initGpuResources() {
+    // 设置当前进程使用的 GPU
+    cudaSetDevice(mpi_config.local_gpu_id);
+
+    // 创建 CUDA 流
+    cudaStreamCreate(&stream);
+
+    // 设置 cuBLAS 和 cuSOLVER 句柄的流
+    cublasSetStream(cublas_handle, stream);
+    cusolverDnSetStream(cusolver_handle, stream);
+}
+
+template <typename T>
+void MpiSy2sbContext<T>::initCommunication() {
+    // 在 MPI 环境中初始化 NCCL
+    // 获取所有进程的 GPU ID
+    std::vector<int> all_gpu_ids(mpi_config.size);
+
+    // 收集所有进程的本地 GPU ID
+    MPI_Allgather(&mpi_config.local_gpu_id, 1, MPI_INT, all_gpu_ids.data(), 1,
+                  MPI_INT, MPI_COMM_WORLD);
+
+    // 生成唯一的 NCCL ID (在 rank 0 上生成，然后广播)
+    ncclUniqueId nccl_id;
+    if (mpi_config.rank == 0) {
+        ncclGetUniqueId(&nccl_id);
+    }
+    MPI_Bcast(&nccl_id, sizeof(nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
+
+    // 初始化 NCCL 通信器
+    ncclResult_t nccl_result =
+        ncclCommInitRank(&nccl_comm, mpi_config.size, nccl_id, mpi_config.rank);
+
+    if (nccl_result != ncclSuccess) {
+        throw std::runtime_error(fmt::format("NCCL initialization failed: {}",
+                                             ncclGetErrorString(nccl_result)));
+    }
+}
+
+template <typename T>
+void MpiSy2sbContext<T>::allocateGpuMemory() {
+    // 计算矩阵分布：每个进程负责 n/size 列（按列分块）
+    if (n % mpi_config.size != 0) {
+        throw std::runtime_error("Matrix size must be divisible by MPI size");
+    }
+
+    // 设置当前 GPU 设备
+    cudaSetDevice(mpi_config.local_gpu_id);
+
+    // 分配各个矩阵的 GPU 内存 (直接调用 resize)
+    // A, W, Y, oriA: 存储本地矩阵块 (n × cols_per_process) 按列分块
+    gpu_A.resize(local_matrix_size);
+    gpu_W.resize(local_matrix_size);
+    gpu_Y.resize(local_matrix_size);
+    gpu_oriA.resize(local_matrix_size);  // 原始矩阵 A 的备份
+
+    // R: 存储 QR 分解的上三角矩阵 (n × nb)
+    gpu_R.resize(n * nb);
+
+    // Z: 工作矩阵，用于 Householder 向量 (n × nb)
+    gpu_Z.resize(n * nb);
+
+    // work: 临时工作空间 (2 × n × nb)
+    gpu_work.resize(2 * n * nb);
+
+    // 初始化为 0
+    thrust::fill(gpu_W.begin(), gpu_W.end(), T(0));
+    thrust::fill(gpu_Y.begin(), gpu_Y.end(), T(0));
+    thrust::fill(gpu_Z.begin(), gpu_Z.end(), T(0));
+
+    // 复制主机数据到 GPU
+    copyHostToGpu();
+}
+
+template <typename T>
+void MpiSy2sbContext<T>::copyHostToGpu() {
+    try {
+        // 按列复制 A 矩阵的本地部分
+        // 对于列主序存储，我们需要复制连续的列块
+        thrust::copy(A_host + start_col * n,
+                     A_host + start_col * n + local_matrix_size, gpu_A.begin());
+
+        // 同时复制到 oriA 作为原始矩阵的备份
+        thrust::copy(A_host + start_col * n,
+                     A_host + start_col * n + local_matrix_size,
+                     gpu_oriA.begin());
+    } catch (const std::exception& e) {
+        throw std::runtime_error(
+            fmt::format("Failed to copy host data to GPU: {}", e.what()));
+    }
+}
+
+template <typename T>
+void MpiSy2sbContext<T>::cleanup() {
+    // 销毁 NCCL 通信器
+    if (nccl_comm != nullptr) {
+        ncclCommDestroy(nccl_comm);
+    }
+
+    // 销毁 CUDA 流
+    cudaStreamDestroy(stream);
+}
+};  // namespace mpi
+
+namespace internal {
+
+// 内部函数实现
+template <typename T>
+void sy2sb_recursive_mpi(size_t recursive_depth,
+                         matrix_ops::mpi::MpiSy2sbContext<T>& ctx) {
+    // 计算递归偏移量
+    size_t recursive_offset_finished = ctx.nb * recursive_depth;
+
+    // 检查递归终止条件
+    if (ctx.n <= ctx.nb + recursive_offset_finished) {
+        return;
+    }
+
+    // 设置当前设备
+    cudaSetDevice(ctx.mpi_config.local_gpu_id);
+
+    // 面板循环处理，每次处理 b 列 (参照分布式版本的循环结构)
+    for (size_t i = ctx.b;
+         i <= ctx.nb && i < (ctx.n - recursive_offset_finished); i += ctx.b) {
+        size_t panel_m = ctx.n - recursive_offset_finished - i;
+        size_t panel_n = ctx.b;
+
+        // 计算当前面板在全局矩阵中的列偏移
+        size_t global_panel_col = recursive_offset_finished + (i - ctx.b);
+
+        // 1. 面板分解 (Panel QR) - 只有拥有该面板的进程执行
+        performPanelQR(ctx, global_panel_col, panel_m, panel_n, i,
+                       recursive_offset_finished);
+
+        // 2. MPI 通信和数据交换 - 所有进程参与
+        exchangeDataMPI(ctx, global_panel_col, panel_m, panel_n, i);
+
+        // 3. 矩阵更新 - 参照分布式版本的 WY 更新逻辑
+        updateMatricesMPI(ctx, i, panel_m, panel_n, recursive_offset_finished);
+
+        // 4. 更新 A 矩阵 (对应分布式版本的 i < nb 部分)
+        if (i < ctx.nb) {
+            updateAMatrixMPI(ctx, i, panel_m, panel_n,
+                             recursive_offset_finished);
+        }
+    }
+
+    // 5. 递归调用下一层
+    sy2sb_recursive_mpi(recursive_depth + 1, ctx);
+}
+
+template <typename T>
+void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
+                    size_t global_panel_col, size_t panel_m, size_t panel_n,
+                    size_t i, size_t recursive_offset_finished) {
+    // 检查当前面板是否在本进程的列范围内
+    if (ctx.isLocalColumn(global_panel_col)) {
+        // 计算本地面板指针
+        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
+        auto panel_ptr = ctx.gpu_A.data() + local_col * ctx.n + i;
+        auto panel_W_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
+        auto panel_Y_ptr = ctx.gpu_Y.data() + local_col * ctx.n + i;
+        auto R_ptr = ctx.gpu_R.data() + recursive_offset_finished;
+
+        util::MpiLogger::println("Panel is local: local_col={}, performing QR",
+                                 local_col);
+
+        // 执行面板QR分解
+        matrix_ops::internal::sy2sb::panelQR(
+            ctx.cublas_handle, ctx.cusolver_handle, panel_m, panel_n, panel_ptr,
+            ctx.n,              // 使用 n 作为 lda
+            R_ptr, ctx.n,       // R 矩阵的 leading dimension
+            panel_W_ptr, ctx.n  // W 矩阵的 leading dimension
+        );
+
+        // 复制面板数据到 Y 矩阵 (保存 Q 的表示)
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(panel_ptr, ctx.n, panel_Y_ptr, ctx.n,
+                                   panel_m, panel_n);
+
+        // 复制 R 数据回面板位置
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(R_ptr, ctx.n, panel_ptr, ctx.n, panel_m,
+                                   panel_n);
+
+        util::MpiLogger::println("Panel QR completed successfully");
+    }
+
+    // 同步等待所有进程完成面板QR
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+template <typename T>
+void exchangeDataMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
+                     size_t global_panel_col, size_t panel_m, size_t panel_n,
+                     size_t i) {
+    // TODO: 实现 MPI 进程间的数据交换
+    // 参照分布式版本的 NCCL 通信模式
+    // 需要在进程间广播 panelQR 的结果 (W, Y, R)
+}
+
+template <typename T>
+void updateMatricesMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
+                       size_t panel_m, size_t panel_n,
+                       size_t recursive_offset_finished) {
+    // TODO: 实现矩阵更新逻辑
+    // 参照分布式版本中循环内的 WY 表示更新逻辑
+    // 包括 panel_Z 的计算和复杂的 gemm 操作序列
+}
+
+template <typename T>
+void updateAMatrixMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
+                      size_t panel_m, size_t panel_n,
+                      size_t recursive_offset_finished) {
+    // TODO: 实现 A 矩阵的更新
+    // 对应分布式版本中 if (i < nb) 部分的两个 gemm 操作
+}
+
+}  // namespace internal
+
+/**
+ * @brief MPI 版本的 sy2sb 主函数
+ */
+template <typename T>
+void sy2sb(const MpiConfig& mpi_config, size_t n, T* A,
+           size_t lda, T* W, size_t ldw, T* Y, size_t ldy, size_t nb,
+           size_t b) {
+    // 检查分块兼容性（与分布式版本保持一致）
+    if (n % b % mpi_config.size != 0) {
+        throw std::runtime_error(
+            "Matrix is not well divisible into MPI process panels");
+    }
+
+    // 创建 MPI sy2sb 上下文
+    MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
+
+    // 调用递归实现
+    internal::sy2sb_recursive_mpi<T>(0, ctx);
+
+    // MPI 同步
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+}  // namespace mpi
+}  // namespace matrix_ops
+
+// 显式模板实例化
+template class matrix_ops::mpi::MpiSy2sbContext<float>;
+template class matrix_ops::mpi::MpiSy2sbContext<double>;
+
+// 显式模板实例化 sy2sb 函数
+template void matrix_ops::mpi::sy2sb<float>(
+    const matrix_ops::mpi::MpiConfig& mpi_config, size_t n, float* A,
+    size_t lda, float* W, size_t ldw, float* Y, size_t ldy, size_t nb,
+    size_t b);
+
+template void matrix_ops::mpi::sy2sb<double>(
+    const matrix_ops::mpi::MpiConfig& mpi_config, size_t n, double* A,
+    size_t lda, double* W, size_t ldw, double* Y, size_t ldy, size_t nb,
+    size_t b);

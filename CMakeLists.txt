@@ -57,6 +57,7 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/matrix_ops_syr2k.cu
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
     src/matrix_ops/dist/matrix_ops_dist_sy2sb.cu
+    src/matrix_ops/mpi/matrix_ops_mpi_sy2sb.cu
 )
 
 target_include_directories(dist-evd-solver-lib
@@ -64,6 +65,7 @@ target_include_directories(dist-evd-solver-lib
         src/include
         src/include/common
         src/include/matrix_ops/internal/sy2sb
+        src/include/matrix_ops
     PRIVATE
         ${MPI_CXX_INCLUDE_DIRS}
 )

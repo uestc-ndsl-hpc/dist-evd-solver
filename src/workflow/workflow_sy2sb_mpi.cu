@@ -4,9 +4,11 @@
 #include "gpu_handle_wrappers.h"
 #include "log.h"
 #include "matrix_ops.cuh"
+#include "matrix_ops_mpi.cuh"
 
 template <typename T>
-void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1) {
+void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
+                            size_t b) {
     // Initialize MPI environment
     int provided;
     MPI_Init_thread(nullptr, nullptr, MPI_THREAD_MULTIPLE, &provided);
@@ -36,7 +38,7 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1) {
     cudaError_t cuda_err = cudaGetDeviceCount(&total_gpus);
     if (cuda_err != cudaSuccess) {
         util::MpiLogger::error("Failed to get CUDA device count: {}",
-                              cudaGetErrorString(cuda_err));
+                               cudaGetErrorString(cuda_err));
         MPI_Finalize();
         return;
     }
@@ -46,8 +48,8 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1) {
     int local_gpu_id = rank % total_gpus;
     cuda_err = cudaSetDevice(local_gpu_id);
     if (cuda_err != cudaSuccess) {
-        util::MpiLogger::error("Failed to set CUDA device {}: {}", 
-                              local_gpu_id, cudaGetErrorString(cuda_err));
+        util::MpiLogger::error("Failed to set CUDA device {}: {}", local_gpu_id,
+                               cudaGetErrorString(cuda_err));
         MPI_Finalize();
         return;
     }
@@ -76,15 +78,34 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1) {
             auto A_d = matrix_ops::create_symmetric_random<T>(n, true);
             thrust::copy(A_d.begin(), A_d.end(), A_h.begin());
         }
-        
+
         if (util::MpiLogger::is_verbose() && n <= 256) {
             matrix_ops::print(A_h.data(), n, n, n, "Initial matrix A");
         }
     }
 
-    // TODO: Distribute matrix A across MPI processes
-
     // TODO: Perform symmetric-to-band (sy2sb) reduction using MPI
+
+    // 广播矩阵数据到所有进程
+    MPI_Bcast(A_h.data(), n * n,
+              std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
+              MPI_COMM_WORLD);
+
+    // 创建工作数组
+    auto W_h = thrust::host_vector<T>(n * n, 0.0);
+    auto Y_h = thrust::host_vector<T>(n * n, 0.0);
+
+    // 创建 MPI 配置
+    matrix_ops::mpi::MpiConfig mpi_config(rank, size, current_device,
+                                          total_gpus);
+
+    // 执行 MPI sy2sb 算法
+    util::MpiLogger::tic("sy2sb_mpi_computation");
+
+    matrix_ops::mpi::sy2sb<T>(mpi_config, n, A_h.data(), n, W_h.data(), n,
+                              Y_h.data(), n, nb, b);
+
+    util::MpiLogger::toc("sy2sb_mpi_computation");
 
     // TODO: Gather results back to root process
 
@@ -99,6 +120,6 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus = 1) {
 
 // Explicit template instantiation
 template void run_workflow_sy2sb_mpi<float>(size_t n, bool validate,
-                                            int num_gpus);
+                                            int num_gpus, size_t nb, size_t b);
 template void run_workflow_sy2sb_mpi<double>(size_t n, bool validate,
-                                             int num_gpus);
+                                             int num_gpus, size_t nb, size_t b);
