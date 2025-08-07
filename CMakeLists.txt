@@ -65,6 +65,8 @@ target_include_directories(dist-evd-solver-lib
 
 find_package(OpenMP REQUIRED)
 
+find_package(MPI REQUIRED)
+
 target_link_libraries(dist-evd-solver-lib
     PUBLIC
         NVHPC::CUDART
@@ -75,6 +77,7 @@ target_link_libraries(dist-evd-solver-lib
         NVHPC::NCCL
         fmt::fmt
         OpenMP::OpenMP_CXX
+        MPI::MPI_CXX
         argh
 )
 
