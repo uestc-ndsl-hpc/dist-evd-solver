@@ -92,13 +92,26 @@ add_executable(dist-evd-solver
     src/workflow/workflow_tsqr.cu
     src/workflow/workflow_sy2sb.cu
     src/workflow/workflow_sy2sb_dist.cu
-    src/workflow/workflow_sy2sb_mpi.cu
 )
 
 target_link_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
-target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
+target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
 
 target_link_libraries(dist-evd-solver
+    PRIVATE
+        dist-evd-solver-lib
+)
+
+# --- MPI 可执行文件定义 ---
+add_executable(dist-evd-solver-mpi
+    src/main-mpi.cu
+    src/workflow/workflow_sy2sb_mpi.cu
+)
+
+target_link_options(dist-evd-solver-mpi PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver-mpi PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
+
+target_link_libraries(dist-evd-solver-mpi
     PRIVATE
         dist-evd-solver-lib
 )
