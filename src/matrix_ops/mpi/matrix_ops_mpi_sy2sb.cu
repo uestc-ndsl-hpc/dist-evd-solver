@@ -11,12 +11,6 @@
 #include "matrix_ops_mpi.cuh"
 #include "sy2sb_panelqr.cuh"
 
-// 控制 W 矩阵调试打印的开关
-constexpr bool kPrintWMatrixDebug = false;
-
-// 控制 Z 矩阵调试打印的开关
-constexpr bool kPrintZMatrixDebug = true;
-
 namespace matrix_ops {
 namespace mpi {
 
@@ -40,28 +34,19 @@ MpiSy2sbContext<T>::MpiSy2sbContext(const MpiConfig& config, size_t matrix_n,
       A_host(A),
       W_host(W),
       Y_host(Y) {
-    util::MpiLogger::println("Process {} starting MpiSy2sbContext constructor",
-                             mpi_config.rank);
-
     // 计算分块信息
     cols_per_process = n / mpi_config.size;
     start_col = mpi_config.rank * cols_per_process;
     local_matrix_size = cols_per_process * n;
+    if constexpr (std::is_same_v<T, float>) {
+        nccl_type = ncclFloat32;
+    } else if constexpr (std::is_same_v<T, double>) {
+        nccl_type = ncclFloat64;
+    }
 
-    util::MpiLogger::println("Process {} initializing GPU resources",
-                             mpi_config.rank);
     initGpuResources();
-
-    util::MpiLogger::println("Process {} initializing communication",
-                             mpi_config.rank);
     initCommunication();
-
-    util::MpiLogger::println("Process {} allocating GPU memory",
-                             mpi_config.rank);
     allocateGpuMemory();
-
-    util::MpiLogger::println("Process {} completed MpiSy2sbContext constructor",
-                             mpi_config.rank);
 }
 
 template <typename T>
@@ -106,9 +91,6 @@ void MpiSy2sbContext<T>::initGpuResources() {
 
 template <typename T>
 void MpiSy2sbContext<T>::initCommunication() {
-    util::MpiLogger::println("Process {} starting initCommunication",
-                             mpi_config.rank);
-
     // 在 MPI 环境中初始化层次化 NCCL 通信组
     // 获取所有进程的 GPU ID
     std::vector<int> all_gpu_ids(mpi_config.size);
@@ -116,9 +98,6 @@ void MpiSy2sbContext<T>::initCommunication() {
     // 收集所有进程的本地 GPU ID
     MPI_Allgather(&mpi_config.local_gpu_id, 1, MPI_INT, all_gpu_ids.data(), 1,
                   MPI_INT, MPI_COMM_WORLD);
-
-    util::MpiLogger::println("Process {} completed MPI_Allgather",
-                             mpi_config.rank);
 
     // 创建层次化通信组：[0,1,2,3] -> [1,2,3] -> [2,3] -> [3]
     // 这样设计可以让早完成的进程开始下一轮计算，实现流水线并行
@@ -130,9 +109,6 @@ void MpiSy2sbContext<T>::initCommunication() {
     }
     MPI_Bcast(&main_nccl_id, sizeof(main_nccl_id), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    util::MpiLogger::println("Process {} completed main NCCL ID broadcast",
-                             mpi_config.rank);
-
     ncclResult_t nccl_result = ncclCommInitRank(&nccl_comm, mpi_config.size,
                                                 main_nccl_id, mpi_config.rank);
     if (nccl_result != ncclSuccess) {
@@ -141,44 +117,22 @@ void MpiSy2sbContext<T>::initCommunication() {
                         ncclGetErrorString(nccl_result)));
     }
 
-    util::MpiLogger::println("Process {} completed main NCCL comm init",
-                             mpi_config.rank);
-
     // 2. 创建子通信组：每个进程参与从自己开始到最后的通信组
     // 进程i参与通信组 [i, i+1, ..., size-1]
     sub_comm_groups.resize(mpi_config.size);
     sub_mpi_comms.resize(mpi_config.size);  // 同时创建对应的MPI子通信器
 
-    util::MpiLogger::println("Process {} starting sub-group creation loop",
-                             mpi_config.rank);
-
     for (int start_rank = 0; start_rank < mpi_config.size; start_rank++) {
-        util::MpiLogger::println(
-            "Process {} processing sub-group starting from rank {}",
-            mpi_config.rank, start_rank);
-
         // 所有进程都参与MPI_Comm_split，但只有部分进程会被分配到有效的通信器
         int color =
             (mpi_config.rank >= start_rank) ? start_rank : MPI_UNDEFINED;
 
-        util::MpiLogger::println(
-            "Process {} calling MPI_Comm_split for group {} with color={}",
-            mpi_config.rank, start_rank, color);
-
         MPI_Comm_split(MPI_COMM_WORLD, color, mpi_config.rank,
                        &sub_mpi_comms[start_rank]);
-
-        util::MpiLogger::println(
-            "Process {} completed MPI_Comm_split for group {}", mpi_config.rank,
-            start_rank);
 
         if (mpi_config.rank >= start_rank) {
             int sub_group_size = mpi_config.size - start_rank;
             int sub_rank = mpi_config.rank - start_rank;
-
-            util::MpiLogger::println(
-                "Process {} creating sub-group {}: size={}, sub_rank={}",
-                mpi_config.rank, start_rank, sub_group_size, sub_rank);
 
             // 只有当子组大小大于1时才创建NCCL通信器
             // 单进程组不需要NCCL通信
@@ -187,27 +141,15 @@ void MpiSy2sbContext<T>::initCommunication() {
                 ncclUniqueId sub_nccl_id;
                 if (mpi_config.rank == start_rank) {
                     ncclGetUniqueId(&sub_nccl_id);
-                    util::MpiLogger::println(
-                        "Process {} generated NCCL ID for group {}",
-                        mpi_config.rank, start_rank);
                 }
 
                 // 在子组内广播NCCL ID
-                util::MpiLogger::println(
-                    "Process {} starting NCCL ID broadcast for group {}",
-                    mpi_config.rank, start_rank);
+
                 MPI_Bcast(&sub_nccl_id, sizeof(sub_nccl_id), MPI_BYTE, 0,
                           sub_mpi_comms[start_rank]);
 
-                util::MpiLogger::println(
-                    "Process {} completed sub-group NCCL ID broadcast for "
-                    "group {}",
-                    mpi_config.rank, start_rank);
-
                 // 初始化子组NCCL通信器
-                util::MpiLogger::println(
-                    "Process {} initializing NCCL comm for group {}",
-                    mpi_config.rank, start_rank);
+
                 ncclResult_t sub_result =
                     ncclCommInitRank(&sub_comm_groups[start_rank],
                                      sub_group_size, sub_nccl_id, sub_rank);
@@ -218,34 +160,17 @@ void MpiSy2sbContext<T>::initCommunication() {
                         start_rank, ncclGetErrorString(sub_result)));
                 }
 
-                util::MpiLogger::println(
-                    "Process {} completed NCCL initialization for group {}",
-                    mpi_config.rank, start_rank);
             } else {
                 // 单进程组：不需要NCCL通信器
                 sub_comm_groups[start_rank] = nullptr;
-                util::MpiLogger::println(
-                    "Process {} skipping NCCL creation for single-process "
-                    "group {}",
-                    mpi_config.rank, start_rank);
             }
 
-            util::MpiLogger::println(
-                "Process {} joined sub-group starting from rank {}, "
-                "sub_rank={}, group_size={}",
-                mpi_config.rank, start_rank, sub_rank, sub_group_size);
         } else {
             sub_comm_groups[start_rank] = nullptr;
             // sub_mpi_comms[start_rank]
             // 已经在MPI_Comm_split中设置为MPI_COMM_NULL
-            util::MpiLogger::println(
-                "Process {} not participating in sub-group {}", mpi_config.rank,
-                start_rank);
         }
     }
-
-    util::MpiLogger::println("Process {} completed initCommunication",
-                             mpi_config.rank);
 }
 
 template <typename T>
@@ -337,10 +262,6 @@ void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                                 size_t recursive_offset_finished);
 
 template <typename T>
-void pipelineParallelScheduler(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                               size_t current_phase, size_t total_phases);
-
-template <typename T>
 void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                          size_t min_participating_rank,
                          const std::string& operation_name);
@@ -353,76 +274,54 @@ void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth,
                          matrix_ops::mpi::MpiSy2sbContext<T>& ctx) {
-    // 计算递归偏移量
-    size_t recursive_offset_finished = ctx.nb * recursive_depth;
+    
+    // compute recrusive offset and panel related resources
+    auto recrusive_offset_finished = ctx.nb * recursive_depth;
+    auto recrusive_offset = (ctx.nb + ctx.nb * ctx.n) * recursive_depth;
+    auto gpu_index = ctx.computeProcessForColumn(recrusive_offset);
+    auto mpi_comm = ctx.sub_mpi_comms[gpu_index];
+    auto& handle = ctx.cublas_handle;
+    auto& cusolver_handle = ctx.cusolver_handle;
 
-    // 设置当前设备
-    cudaSetDevice(ctx.mpi_config.local_gpu_id);
+    if (ctx.mpi_config.rank < gpu_index) {
+        // TODO: 可以增加逻辑，包括但不限于 SBR-Back 之类的调度逻辑了
+        return;
+    }
 
-    util::MpiLogger::println(
-        "Process {} 递归层数={}, recursive_offset_finished={}, 终止条件检查: "
-        "{} <= {}+{} "
-        "= {}",
-        ctx.mpi_config.rank, recursive_depth, recursive_offset_finished, ctx.n,
-        ctx.nb, recursive_offset_finished,
-        ctx.n <= ctx.nb + recursive_offset_finished);
+    util::MpiLogger::println("gpu-index {}", gpu_index);
 
-    // 面板循环处理，每次处理 b 列 (集成流水线并行优化)
-    for (size_t i = ctx.b;
-         i <= ctx.nb && i < (ctx.n - recursive_offset_finished); i += ctx.b) {
-        size_t panel_m = ctx.n - recursive_offset_finished - i;
-        size_t panel_n = ctx.b;
+    thrust::device_ptr<T> A, W, Y, Z, R, work_ptr;
 
-        // 计算当前面板在全局矩阵中的列偏移
-        size_t global_panel_col = recursive_offset_finished + (i - ctx.b);
+    if (ctx.mpi_config.rank == gpu_index) {
+        util::MpiLogger::println("start_col {}", ctx.start_col);
+        A = ctx.gpu_A.data() + recrusive_offset - ctx.start_col * ctx.n;
+        W = ctx.gpu_W.data() + recrusive_offset - ctx.start_col * ctx.n;
+        Y = ctx.gpu_Y.data() + recrusive_offset - ctx.start_col * ctx.n;
+        R = ctx.gpu_R.data() + recrusive_offset_finished;
+        Z = ctx.gpu_Z.data();
+    }
 
-        util::MpiLogger::println(
-            "Process {} entering panel loop: i={}, global_panel_col={}, "
-            "panel_m={}, panel_n={}",
-            ctx.mpi_config.rank, i, global_panel_col, panel_m, panel_n);
+    // for-loop update with b panel
+    for (auto i = ctx.b; i <= ctx.nb && i < ctx.n - recrusive_offset_finished;
+         i += ctx.b) {
+        auto panel_m = ctx.n - recrusive_offset_finished - i;
+        auto panel_n = ctx.b;
 
-        // 流水线并行调度：检查是否可以并行执行
-        size_t current_phase = (i - ctx.b) / ctx.b;
-        size_t total_phases = ctx.nb / ctx.b;
-        pipelineParallelScheduler(ctx, current_phase, total_phases);
-
-        // 1. 面板分解 (Panel QR) - 只有拥有该面板的进程执行
-        util::MpiLogger::println(
-            "Process {} calling performPanelQR for global_panel_col={}",
-            ctx.mpi_config.rank, global_panel_col);
-        performPanelQR(ctx, global_panel_col, panel_m, panel_n, i,
-                       recursive_offset_finished);
-        // 2. W 矩阵广播
-        broadcastWMatrix(ctx, i, panel_m, panel_n, global_panel_col);
-
-        // 3. 矩阵更新 - 参照分布式版本的 WY 更新逻辑
-        updateMatricesMPI(ctx, i, panel_m, panel_n, recursive_offset_finished);
-        // 4. 更新 A 矩阵 (对应分布式版本的 i < nb 部分)
-        if (i < ctx.nb) {
-            updateAMatrixMPI(ctx, i, panel_m, panel_n,
-                             recursive_offset_finished);
+        // process for this panel do the work
+        if (gpu_index == ctx.mpi_config.rank) {
         }
-
-        // 阶段完成同步：使用层次化Barrier优化
-        size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
-        hierarchicalBarrier(ctx, owner_rank,
-                            fmt::format("phase-{}-complete", current_phase));
     }
 
     // 递归终止条件检查 (参照分布式版本的位置)
-    if (ctx.n <= ctx.nb + recursive_offset_finished) {
-        util::MpiLogger::println("递归终止：{} <= {} + {} = {}", ctx.n, ctx.nb,
-                                 recursive_offset_finished,
-                                 ctx.nb + recursive_offset_finished);
+    if (ctx.n <= ctx.nb + recrusive_offset_finished) {
         return;
     }
 
     // TODO: 在这里需要添加类似分布式版本的矩阵更新逻辑 (syr2k等)
     // 这是递归间的关键多进程操作
-    performInterRecursiveSyr2k(ctx, recursive_depth, recursive_offset_finished);
-
-    util::MpiLogger::println("需要继续递归到下一层：recursive_depth={} -> {}",
-                             recursive_depth, recursive_depth + 1);
+    // performInterRecursiveSyr2k(ctx, recursive_depth,
+    // recursive_offset_finished);
+    
 
     // 5. 递归调用下一层
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
@@ -444,10 +343,6 @@ void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
         auto panel_Y_ptr = ctx.gpu_Y.data() + local_col * ctx.n + i;
         auto R_ptr = ctx.gpu_R.data() + recursive_offset_finished;
 
-        util::MpiLogger::println(
-            "Panel is local: global_col={}, local_col={}, performing QR",
-            global_panel_col, local_col);
-
         // 执行面板QR分解
         matrix_ops::internal::sy2sb::panelQR(
             ctx.cublas_handle, ctx.cusolver_handle, panel_m, panel_n, panel_ptr,
@@ -465,15 +360,11 @@ void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(R_ptr, ctx.n, panel_ptr, ctx.n, panel_m,
                                    panel_n);
-
-        util::MpiLogger::println("Panel QR completed successfully");
     }
 
     // 使用层次化Barrier：只有参与的进程需要等待
     // 这样可以让早完成的进程开始下一阶段工作
     hierarchicalBarrier(ctx, owner_rank, "Panel-QR");
-
-    util::MpiLogger::println("Panel QR sync complete");
 }
 
 // W矩阵广播函数 - 使用层次化子通信组实现
@@ -501,11 +392,6 @@ void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
         int sub_group_size = ctx.mpi_config.size - owner_rank;
         int sub_owner_rank = 0;  // 在子组中owner_rank成为rank 0
 
-        util::MpiLogger::println(
-            "Process {} broadcasting W in sub-group starting from rank {}: "
-            "sub_group_size={}, panel_m={}, panel_n={}",
-            ctx.mpi_config.rank, owner_rank, sub_group_size, panel_m, panel_n);
-
         result = ncclBcast(w_source_ptr.get(), panel_m * panel_n, nccl_type,
                            sub_owner_rank, ctx.sub_comm_groups[owner_rank],
                            ctx.stream);
@@ -517,72 +403,19 @@ void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
         }
     } else if (ctx.mpi_config.size == 1) {
         // 单进程情况，无需广播
-        util::MpiLogger::println(
-            "Process {} single process mode, skipping W broadcast",
-            ctx.mpi_config.rank);
+
     } else {
         // 回退到主通信组（理论上不应发生，作为安全保护）
-        util::MpiLogger::println(
-            "Process {} falling back to main NCCL comm for W broadcast to rank "
-            "{}",
-            ctx.mpi_config.rank, owner_rank);
-
-        result = ncclBcast(w_source_ptr.get(), panel_m * panel_n, nccl_type,
-                           owner_rank, ctx.nccl_comm, ctx.stream);
-
-        if (result != ncclSuccess) {
-            throw std::runtime_error(
-                fmt::format("Main NCCL Bcast failed for W matrix: {}",
-                            ncclGetErrorString(result)));
-        }
+        throw std::runtime_error(
+            fmt::format("Process {} falling back to main NCCL comm for W "
+                        "broadcast to rank {}",
+                        ctx.mpi_config.rank, owner_rank));
     }
 
     // 同步以确保广播完成
     cudaStreamSynchronize(ctx.stream);
 
-    // 验证 W 矩阵广播的正确性
-    if constexpr (kPrintWMatrixDebug) {
-        thrust::host_vector<T> w_host(panel_m * panel_n);
-        thrust::host_vector<T> w_ref(panel_m * panel_n);
-
-        // 获取当前进程的 W 数据
-        thrust::device_ptr<T> w_ptr;
-        if (ctx.isLocalColumn(global_panel_col)) {
-            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-            w_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-        } else {
-            w_ptr = ctx.gpu_work.data();
-        }
-
-        cudaMemcpy(w_host.data(), w_ptr.get(), panel_m * panel_n * sizeof(T),
-                   cudaMemcpyDeviceToHost);
-
-        // 从拥有面板的进程获取参考数据
-        if (ctx.mpi_config.rank == owner_rank) {
-            // 拥有面板的进程直接用自己的数据作为参考
-            thrust::copy(w_host.begin(), w_host.end(), w_ref.begin());
-        }
-
-        // 广播参考数据到所有进程
-        MPI_Bcast(w_ref.data(), panel_m * panel_n,
-                  std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, owner_rank,
-                  MPI_COMM_WORLD);
-
-        // 所有进程验证数据一致性
-        for (size_t idx = 0; idx < panel_m * panel_n; ++idx) {
-            if (std::abs(w_host[idx] - w_ref[idx]) > 1e-6) {
-                throw std::runtime_error(fmt::format(
-                    "Process {} W matrix broadcast verification failed at "
-                    "index {}: "
-                    "expected {:.6f}, got {:.6f}",
-                    ctx.mpi_config.rank, idx, w_ref[idx], w_host[idx]));
-            }
-        }
-
-        util::MpiLogger::println(
-            "Process {} W matrix broadcast verification passed",
-            ctx.mpi_config.rank);
-    }
+    MPI_Barrier(ctx.sub_mpi_comms[owner_rank]);
 }
 
 // 多进程并行计算 A*W (类似分布式版本的 computeAwMgpu)
@@ -655,40 +488,6 @@ void computeAwMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
     }
 
     cudaStreamSynchronize(ctx.stream);
-
-    // 验证 Z 矩阵 gather 后的正确性
-    if constexpr (kPrintZMatrixDebug) {
-        thrust::host_vector<T> z_host(panel_m * panel_n);
-        thrust::host_vector<T> z_ref(panel_m * panel_n);
-
-        // 只有拥有面板的进程打印Z矩阵
-        size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
-        if (ctx.mpi_config.rank == owner_rank) {
-            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-            auto gathered_ptr = ctx.gpu_Z.data() + local_col * ctx.n + i;
-
-            cudaMemcpy(z_host.data(), gathered_ptr.get(),
-                       panel_m * panel_n * sizeof(T), cudaMemcpyDeviceToHost);
-
-            util::MpiLogger::println(
-                "Process {} Z matrix after gather (global_panel_col={}, "
-                "panel_m={}, panel_n={}):",
-                ctx.mpi_config.rank, global_panel_col, panel_m, panel_n);
-
-            // 打印Z矩阵内容
-            for (size_t row = 0; row < panel_m; ++row) {
-                std::string row_str = fmt::format("Row {}: ", row);
-                for (size_t col = 0; col < panel_n; ++col) {
-                    row_str +=
-                        fmt::format("{:.6f} ", z_host[row + col * panel_m]);
-                }
-                util::MpiLogger::println("{}", row_str);
-            }
-        }
-
-        // 同步确保所有进程都完成
-        MPI_Barrier(MPI_COMM_WORLD);
-    }
 }
 
 // 单进程的WY更新逻辑 (类似分布式版本面板循环内的gemm序列)
@@ -804,10 +603,6 @@ void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
          group_start++) {
         if (ctx.mpi_config.rank >= group_start &&
             ctx.sub_comm_groups[group_start] != nullptr) {
-            util::MpiLogger::println(
-                "Process {} participating in sub-group {} AllReduce",
-                ctx.mpi_config.rank, group_start);
-
             // 在该子组内进行AllReduce
             ncclAllReduce(local_Z_ptr.get(), local_Z_ptr.get(),
                           sub_matrix_n * ctx.nb, nccl_type, ncclSum,
@@ -837,34 +632,6 @@ void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
         tail_matrix_ptr, ctx.n,
         ctx.gpu_oriA.data() + (ctx.n - sub_matrix_n) * ctx.cols_per_process,
         ctx.n, sub_matrix_n, ctx.cols_per_process);
-
-    util::MpiLogger::println(
-        "Process {} completed syr2k with hierarchical communication",
-        ctx.mpi_config.rank);
-}
-
-// 新增：流水线并行调度函数
-template <typename T>
-void pipelineParallelScheduler(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                               size_t current_phase, size_t total_phases) {
-    // 根据当前阶段和进程rank决定是否可以开始下一阶段的工作
-
-    size_t min_participating_rank = current_phase % ctx.mpi_config.size;
-
-    if (ctx.mpi_config.rank < min_participating_rank) {
-        // 该进程已经完成当前阶段，可以开始准备下一阶段
-        util::MpiLogger::println(
-            "Process {} starting next phase while others finish current phase",
-            ctx.mpi_config.rank);
-
-        // 在这里可以添加预取数据、预分配内存等优化操作
-        // 例如：预计算下一轮需要的矩阵块
-
-    } else {
-        // 该进程仍需参与当前阶段
-        util::MpiLogger::println("Process {} continuing current phase {}",
-                                 ctx.mpi_config.rank, current_phase);
-    }
 }
 
 // 新增：层次化子通信组Barrier函数
@@ -873,37 +640,18 @@ void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                          size_t min_participating_rank,
                          const std::string& operation_name) {
     // 添加调试信息
-    util::MpiLogger::println(
-        "Process {} checking barrier for {}: min_rank={}, rank>={}, size={}, "
-        "comm_null={}",
-        ctx.mpi_config.rank, operation_name, min_participating_rank,
-        ctx.mpi_config.rank >= min_participating_rank, ctx.sub_mpi_comms.size(),
-        min_participating_rank < ctx.sub_mpi_comms.size()
-            ? (ctx.sub_mpi_comms[min_participating_rank] == MPI_COMM_NULL)
-            : true);
 
     // 只有参与该阶段的进程需要同步
     if (ctx.mpi_config.rank >= min_participating_rank &&
         min_participating_rank < ctx.sub_mpi_comms.size() &&
         ctx.sub_mpi_comms[min_participating_rank] != MPI_COMM_NULL) {
-        util::MpiLogger::println(
-            "Process {} syncing with sub-group [{},...,{}] after {}",
-            ctx.mpi_config.rank, min_participating_rank,
-            ctx.mpi_config.size - 1, operation_name);
         MPI_Barrier(ctx.sub_mpi_comms[min_participating_rank]);
-        util::MpiLogger::println("Process {} completed barrier for {}",
-                                 ctx.mpi_config.rank, operation_name);
+
     } else if (ctx.mpi_config.rank < min_participating_rank) {
         // 早完成的进程可以继续下一阶段工作
-        util::MpiLogger::println(
-            "Process {} skipping barrier for {} (already finished this phase)",
-            ctx.mpi_config.rank, operation_name);
+
     } else {
         // 调试：其他情况
-        util::MpiLogger::println(
-            "Process {} cannot participate in barrier for {} (comm not "
-            "available)",
-            ctx.mpi_config.rank, operation_name);
     }
 }
 
@@ -915,35 +663,20 @@ void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
 template <typename T>
 void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
            size_t ldw, T* Y, size_t ldy, size_t nb, size_t b) {
-    util::MpiLogger::println("Process {} entering sy2sb function",
-                             mpi_config.rank);
-
     // 检查分块兼容性（与分布式版本保持一致）
     if (n % b % mpi_config.size != 0) {
         throw std::runtime_error(
             "Matrix is not well divisible into MPI process panels");
     }
 
-    util::MpiLogger::println("Process {} creating MPI sy2sb context",
-                             mpi_config.rank);
-
     // 创建 MPI sy2sb 上下文
     MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
-
-    util::MpiLogger::println("Process {} calling recursive implementation",
-                             mpi_config.rank);
 
     // 调用递归实现
     internal::sy2sb_recursive_mpi<T>(0, ctx);
 
-    util::MpiLogger::println("Process {} completed recursive implementation",
-                             mpi_config.rank);
-
     // 最终同步：确保所有进程完成
     // 使用层次化同步：从小组到大组逐步同步，最后全局同步
-    util::MpiLogger::println(
-        "Process {} starting final hierarchical synchronization",
-        mpi_config.rank);
 
     // 先在各自的子组内同步
     for (int group_start = mpi_config.size - 1; group_start >= 0;
@@ -951,17 +684,13 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
         if (mpi_config.rank >= group_start &&
             group_start < ctx.sub_mpi_comms.size() &&
             ctx.sub_mpi_comms[group_start] != MPI_COMM_NULL) {
-            util::MpiLogger::println(
-                "Process {} syncing with sub-group [{},...,{}]",
-                mpi_config.rank, group_start, mpi_config.size - 1);
             MPI_Barrier(ctx.sub_mpi_comms[group_start]);
             break;  // 只参与一个子组同步
         }
     }
 
     // 最后全局同步确保所有进程完成
-    util::MpiLogger::println("Process {} final global synchronization",
-                             mpi_config.rank);
+
     MPI_Barrier(MPI_COMM_WORLD);
 }
 

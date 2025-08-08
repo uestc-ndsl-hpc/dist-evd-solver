@@ -41,6 +41,7 @@ class MpiSy2sbContext {
     size_t cols_per_process;
     size_t start_col;
     size_t local_matrix_size;
+    ncclDataType_t nccl_type;
 
     // 主机内存指针
     T* A_host;
