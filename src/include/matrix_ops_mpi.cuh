@@ -106,10 +106,6 @@ void performPanelQR(MpiSy2sbContext<T>& ctx, size_t global_panel_col,
                     size_t recursive_offset_finished);
 
 template <typename T>
-void exchangeDataMPI(MpiSy2sbContext<T>& ctx, size_t global_panel_col,
-                     size_t panel_m, size_t panel_n, size_t i);
-
-template <typename T>
 void updateMatricesMPI(MpiSy2sbContext<T>& ctx, size_t i, size_t panel_m,
                        size_t panel_n, size_t recursive_offset_finished);
 

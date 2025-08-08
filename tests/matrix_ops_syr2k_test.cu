@@ -6,7 +6,6 @@
 
 #include "cublas_v2.h"
 #include "gpu_handle_wrappers.h"
-#include "gtest/gtest.h"
 #include "matrix_ops.cuh"
 
 template <typename T>

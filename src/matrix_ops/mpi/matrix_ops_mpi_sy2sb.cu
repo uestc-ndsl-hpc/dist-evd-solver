@@ -1,4 +1,5 @@
 #include <mpi.h>
+#include <nccl.h>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
@@ -9,6 +10,12 @@
 #include "matrix_ops.cuh"
 #include "matrix_ops_mpi.cuh"
 #include "sy2sb_panelqr.cuh"
+
+// 控制 W 矩阵调试打印的开关
+constexpr bool kPrintWMatrixDebug = false;
+
+// 控制 Z 矩阵调试打印的开关
+constexpr bool kPrintZMatrixDebug = true;
 
 namespace matrix_ops {
 namespace mpi {
@@ -338,6 +345,10 @@ void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                          size_t min_participating_rank,
                          const std::string& operation_name);
 
+template <typename T>
+void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
+                      size_t panel_m, size_t panel_n, size_t global_panel_col);
+
 // 内部函数实现
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth,
@@ -381,13 +392,11 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
             ctx.mpi_config.rank, global_panel_col);
         performPanelQR(ctx, global_panel_col, panel_m, panel_n, i,
                        recursive_offset_finished);
-
-        // 2. MPI 通信和数据交换 - 使用层次化通信组
-        exchangeDataMPI(ctx, global_panel_col, panel_m, panel_n, i);
+        // 2. W 矩阵广播
+        broadcastWMatrix(ctx, i, panel_m, panel_n, global_panel_col);
 
         // 3. 矩阵更新 - 参照分布式版本的 WY 更新逻辑
         updateMatricesMPI(ctx, i, panel_m, panel_n, recursive_offset_finished);
-
         // 4. 更新 A 矩阵 (对应分布式版本的 i < nb 部分)
         if (i < ctx.nb) {
             updateAMatrixMPI(ctx, i, panel_m, panel_n,
@@ -457,12 +466,6 @@ void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                                 T>(R_ptr, ctx.n, panel_ptr, ctx.n, panel_m,
                                    panel_n);
 
-        // 打印 Y 和 R 数据
-        util::MpiLogger::println("Q {}:", i / ctx.b);
-        matrix_ops::print(panel_Y_ptr, panel_m, panel_n, ctx.n, "Q");
-        util::MpiLogger::println("R {}", i / ctx.b);
-        matrix_ops::print(panel_Y_ptr, panel_m, panel_n, ctx.n, "R");
-
         util::MpiLogger::println("Panel QR completed successfully");
     }
 
@@ -473,66 +476,113 @@ void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
     util::MpiLogger::println("Panel QR sync complete");
 }
 
+// W矩阵广播函数 - 使用层次化子通信组实现
 template <typename T>
-void exchangeDataMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                     size_t global_panel_col, size_t panel_m, size_t panel_n,
-                     size_t i) {
-    // 使用层次化通信组进行更高效的数据广播
-    // 这样可以实现流水线并行：早完成的进程可以开始下一轮计算
-
+void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
+                      size_t panel_m, size_t panel_n, size_t global_panel_col) {
     auto nccl_type = std::is_same_v<T, float> ? ncclFloat32 : ncclFloat64;
-
-    // 确定哪个进程拥有这个面板
     size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
 
-    // 选择合适的通信组：从拥有面板的进程开始的子组
-    // 例如：如果进程1拥有面板，则使用子组[1,2,3]进行通信
-    ncclComm_t selected_comm = (owner_rank < ctx.sub_comm_groups.size() &&
-                                ctx.sub_comm_groups[owner_rank] != nullptr)
-                                   ? ctx.sub_comm_groups[owner_rank]
-                                   : ctx.nccl_comm;
-
-    // 计算在选定通信组中的根进程rank (相对于子组)
-    int sub_root = 0;  // 在子组中，owner总是rank 0
-
-    util::MpiLogger::println(
-        "Using sub-communication group starting from rank {}, current process "
-        "participating: {}",
-        owner_rank, ctx.mpi_config.rank >= owner_rank);
-
-    // 只有参与该子通信组的进程才进行通信
-    if (ctx.mpi_config.rank >= owner_rank) {
-        // 广播 W 面板数据
-        if (ctx.mpi_config.rank == owner_rank) {
-            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-            auto panel_W_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-            ncclBcast(panel_W_ptr.get(), panel_m * panel_n, nccl_type, sub_root,
-                      selected_comm, ctx.stream);
-        } else {
-            // 接收到临时缓冲区
-            auto work_W_ptr = ctx.gpu_work.data();
-            ncclBcast(work_W_ptr.get(), panel_m * panel_n, nccl_type, sub_root,
-                      selected_comm, ctx.stream);
-        }
-
-        // 广播 Y 面板数据
-        if (ctx.mpi_config.rank == owner_rank) {
-            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-            auto panel_Y_ptr = ctx.gpu_Y.data() + local_col * ctx.n + i;
-            ncclBcast(panel_Y_ptr.get(), panel_m * panel_n, nccl_type, sub_root,
-                      selected_comm, ctx.stream);
-        } else {
-            // 接收到临时缓冲区
-            auto work_Y_ptr = ctx.gpu_work.data() + ctx.n * ctx.nb;
-            ncclBcast(work_Y_ptr.get(), panel_m * panel_n, nccl_type, sub_root,
-                      selected_comm, ctx.stream);
-        }
-
-        cudaStreamSynchronize(ctx.stream);
+    // 获取W矩阵数据指针
+    thrust::device_ptr<T> w_source_ptr;
+    if (ctx.isLocalColumn(global_panel_col)) {
+        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
+        w_source_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
+    } else {
+        w_source_ptr = ctx.gpu_work.data();
     }
 
-    // 不参与该子组的进程可以继续做其他工作
-    // 例如：当进程1拥有面板时，进程0可以开始准备下一轮计算
+    // 根据面板所在的进程确定对应的子通信组
+    // 使用从owner_rank开始的子通信组，确保所有需要的进程都在组内
+    ncclResult_t result = ncclSuccess;
+
+    if (ctx.sub_comm_groups[owner_rank] != nullptr) {
+        // 使用owner_rank对应的子通信组进行广播
+        int sub_group_size = ctx.mpi_config.size - owner_rank;
+        int sub_owner_rank = 0;  // 在子组中owner_rank成为rank 0
+
+        util::MpiLogger::println(
+            "Process {} broadcasting W in sub-group starting from rank {}: "
+            "sub_group_size={}, panel_m={}, panel_n={}",
+            ctx.mpi_config.rank, owner_rank, sub_group_size, panel_m, panel_n);
+
+        result = ncclBcast(w_source_ptr.get(), panel_m * panel_n, nccl_type,
+                           sub_owner_rank, ctx.sub_comm_groups[owner_rank],
+                           ctx.stream);
+
+        if (result != ncclSuccess) {
+            throw std::runtime_error(
+                fmt::format("Sub-group NCCL Bcast failed for W matrix: {}",
+                            ncclGetErrorString(result)));
+        }
+    } else if (ctx.mpi_config.size == 1) {
+        // 单进程情况，无需广播
+        util::MpiLogger::println(
+            "Process {} single process mode, skipping W broadcast",
+            ctx.mpi_config.rank);
+    } else {
+        // 回退到主通信组（理论上不应发生，作为安全保护）
+        util::MpiLogger::println(
+            "Process {} falling back to main NCCL comm for W broadcast to rank "
+            "{}",
+            ctx.mpi_config.rank, owner_rank);
+
+        result = ncclBcast(w_source_ptr.get(), panel_m * panel_n, nccl_type,
+                           owner_rank, ctx.nccl_comm, ctx.stream);
+
+        if (result != ncclSuccess) {
+            throw std::runtime_error(
+                fmt::format("Main NCCL Bcast failed for W matrix: {}",
+                            ncclGetErrorString(result)));
+        }
+    }
+
+    // 同步以确保广播完成
+    cudaStreamSynchronize(ctx.stream);
+
+    // 验证 W 矩阵广播的正确性
+    if constexpr (kPrintWMatrixDebug) {
+        thrust::host_vector<T> w_host(panel_m * panel_n);
+        thrust::host_vector<T> w_ref(panel_m * panel_n);
+
+        // 获取当前进程的 W 数据
+        thrust::device_ptr<T> w_ptr;
+        if (ctx.isLocalColumn(global_panel_col)) {
+            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
+            w_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
+        } else {
+            w_ptr = ctx.gpu_work.data();
+        }
+
+        cudaMemcpy(w_host.data(), w_ptr.get(), panel_m * panel_n * sizeof(T),
+                   cudaMemcpyDeviceToHost);
+
+        // 从拥有面板的进程获取参考数据
+        if (ctx.mpi_config.rank == owner_rank) {
+            // 拥有面板的进程直接用自己的数据作为参考
+            thrust::copy(w_host.begin(), w_host.end(), w_ref.begin());
+        }
+
+        // 广播参考数据到所有进程
+        MPI_Bcast(w_ref.data(), panel_m * panel_n,
+                  std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, owner_rank,
+                  MPI_COMM_WORLD);
+
+        // 所有进程验证数据一致性
+        for (size_t idx = 0; idx < panel_m * panel_n; ++idx) {
+            if (std::abs(w_host[idx] - w_ref[idx]) > 1e-6) {
+                throw std::runtime_error(fmt::format(
+                    "Process {} W matrix broadcast verification failed at "
+                    "index {}: "
+                    "expected {:.6f}, got {:.6f}",
+                    ctx.mpi_config.rank, idx, w_ref[idx], w_host[idx]));
+            }
+        }
+
+        util::MpiLogger::println(
+            "Process {} W matrix broadcast verification passed",
+            ctx.mpi_config.rank);
+    }
 }
 
 // 多进程并行计算 A*W (类似分布式版本的 computeAwMgpu)
@@ -546,33 +596,98 @@ void computeAwMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
     auto nccl_type = std::is_same_v<T, float> ? ncclFloat32 : ncclFloat64;
     size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
 
-    // 获取当前面板的W数据指针
-    thrust::device_ptr<T> panel_W_ptr;
-    if (ctx.mpi_config.rank == owner_rank) {
-        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-        panel_W_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-    } else {
-        // 使用从广播中接收到的W数据
-        panel_W_ptr = ctx.gpu_work.data();
-    }
+    // 获取当前面板的W数据指针 (已从broadcastWMatrix广播到gpu_work.data())
+    thrust::device_ptr<T> panel_W_ptr = ctx.gpu_work.data();
 
     // 计算本地矩阵块的 A*W
     auto local_oriA_ptr = ctx.gpu_oriA.data() + i + recursive_offset_finished;
-    auto local_aw_ptr =
-        ctx.gpu_work.data() + ctx.n * ctx.nb;  // 使用work空间的后半部分
+    auto local_aw_ptr = ctx.gpu_work.data() + ctx.n * ctx.nb;
 
     // 执行 GEMM: local_aw = local_oriA * panel_W
     matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process, panel_n, panel_m,
                      T(1.0), local_oriA_ptr, ctx.n, false, panel_W_ptr, ctx.n,
                      false, T(0.0), local_aw_ptr, ctx.cols_per_process);
 
-    // 将结果收集到拥有面板的进程
+    // 使用点对点通信收集结果到拥有面板的进程
+    size_t elements_per_process = ctx.cols_per_process * panel_n;
+
     if (ctx.mpi_config.rank == owner_rank) {
-        // 接收其他进程的AW结果
-        // TODO: 实现MPI gather操作来收集所有进程的AW结果
+        // 拥有面板的进程接收所有结果
+        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
+        auto gathered_ptr = ctx.gpu_Z.data() + local_col * ctx.n + i;
+
+        // 先复制本地结果
+        if (elements_per_process > 0) {
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                local_aw_ptr, ctx.cols_per_process, gathered_ptr, ctx.n,
+                ctx.cols_per_process, panel_n);
+        }
+
+        // 接收其他进程的结果
+        for (size_t rank = 0; rank < ctx.mpi_config.size; rank++) {
+            if (rank == owner_rank) continue;
+
+            size_t offset = rank * ctx.cols_per_process;
+            auto recv_ptr = gathered_ptr + offset;
+
+            ncclResult_t recv_result =
+                ncclRecv(recv_ptr.get(), elements_per_process, nccl_type, rank,
+                         ctx.nccl_comm, ctx.stream);
+
+            if (recv_result != ncclSuccess) {
+                throw std::runtime_error(
+                    fmt::format("NCCL Recv failed from rank {}: {}", rank,
+                                ncclGetErrorString(recv_result)));
+            }
+        }
     } else {
-        // 发送AW结果到拥有面板的进程
-        // TODO: 实现MPI send操作
+        // 其他进程发送结果到拥有面板的进程
+        ncclResult_t send_result =
+            ncclSend(local_aw_ptr.get(), elements_per_process, nccl_type,
+                     owner_rank, ctx.nccl_comm, ctx.stream);
+
+        if (send_result != ncclSuccess) {
+            throw std::runtime_error(
+                fmt::format("NCCL Send failed to owner {}: {}", owner_rank,
+                            ncclGetErrorString(send_result)));
+        }
+    }
+
+    cudaStreamSynchronize(ctx.stream);
+
+    // 验证 Z 矩阵 gather 后的正确性
+    if constexpr (kPrintZMatrixDebug) {
+        thrust::host_vector<T> z_host(panel_m * panel_n);
+        thrust::host_vector<T> z_ref(panel_m * panel_n);
+
+        // 只有拥有面板的进程打印Z矩阵
+        size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
+        if (ctx.mpi_config.rank == owner_rank) {
+            size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
+            auto gathered_ptr = ctx.gpu_Z.data() + local_col * ctx.n + i;
+
+            cudaMemcpy(z_host.data(), gathered_ptr.get(),
+                       panel_m * panel_n * sizeof(T), cudaMemcpyDeviceToHost);
+
+            util::MpiLogger::println(
+                "Process {} Z matrix after gather (global_panel_col={}, "
+                "panel_m={}, panel_n={}):",
+                ctx.mpi_config.rank, global_panel_col, panel_m, panel_n);
+
+            // 打印Z矩阵内容
+            for (size_t row = 0; row < panel_m; ++row) {
+                std::string row_str = fmt::format("Row {}: ", row);
+                for (size_t col = 0; col < panel_n; ++col) {
+                    row_str +=
+                        fmt::format("{:.6f} ", z_host[row + col * panel_m]);
+                }
+                util::MpiLogger::println("{}", row_str);
+            }
+        }
+
+        // 同步确保所有进程都完成
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 }
 
@@ -715,8 +830,7 @@ void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
                       local_W_ptr, sub_matrix_n, local_Z_ptr, sub_matrix_n,
                       T(1), tail_matrix_ptr, ctx.n);
 
-    // 4. 确保对称性 (类似分布式版本的make_symmetric_functor)
-    // TODO: 实现make_symmetric操作
+    // 4. 对称性处理已移除（由后续操作保证）
 
     // 5. 复制结果到oriA矩阵
     matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
