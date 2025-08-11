@@ -3,6 +3,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
+#include <cstddef>
 #include <stdexcept>
 
 #include "fmt/format.h"
@@ -255,8 +256,135 @@ void MpiSy2sbContext<T>::cleanup() {
 
 namespace internal {
 
+// 新提取的函数，用于执行面板QR分解和相关的数据复制
+template <typename T>
+void performPanelQrComputeWy(int rank, const common::CublasHandle& handle,
+                             const common::CusolverDnHandle& cusolver_handle,
+                             size_t gpu_index, size_t panel_m, size_t panel_n,
+                             thrust::device_ptr<T> panel_ptr, size_t lda,
+                             thrust::device_ptr<T> R, size_t ldr,
+                             thrust::device_ptr<T> panel_W_ptr, size_t ldw,
+                             thrust::device_ptr<T> panel_Y_ptr, size_t ldy,
+                             MPI_Comm& comm) {
+    if (rank == gpu_index) {
+        // execute panel QR decomposition
+        matrix_ops::internal::sy2sb::panelQR(handle, cusolver_handle, panel_m,
+                                             panel_n, panel_ptr, lda, R, ldr,
+                                             panel_W_ptr, ldw);
+        // copy panel data to panelY (using lda)
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(panel_ptr, lda, panel_Y_ptr, ldy, panel_m,
+                                   panel_n);
 
-// 内部函数实现
+        // copy panelR data to panel (using lda)
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(R, lda, panel_ptr, lda, panel_m, panel_n);
+    }
+    MPI_Barrier(comm);
+}
+
+template <typename T>
+void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
+                      int rank, size_t gpu_index, size_t panel_m,
+                      size_t panel_n, size_t i, size_t lda, size_t ldw,
+                      size_t ldz, size_t recrusive_offset,
+                      size_t recrusive_offset_finished) {
+    auto rest_gpu_num = ctx.mpi_config.size - gpu_index;
+
+    // single card
+    if (rest_gpu_num == 1) {
+        auto oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
+                          ctx.start_col * ctx.n + i * lda + i;
+        auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
+                           ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
+        auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
+        matrix_ops::gemm(ctx.cublas_handle, panel_m, ctx.b, panel_m, (T)1,
+                         oriA_panel, lda, false, panel_W_ptr, ldw, false, (T)0,
+                         panel_Z_ptr, ldz);
+    } else {
+        if (ctx.mpi_config.rank == gpu_index) {
+            // copy W to workspace
+            auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
+                               ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                panel_W_ptr, ldw, ctx.gpu_work.data(), panel_m, panel_m, ctx.b);
+        }
+
+        ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type, 0,
+                  ctx.nccl_comm, ctx.stream);
+        cudaStreamSynchronize(ctx.stream);
+
+        auto oriA_panel = ctx.gpu_oriA.data() + i + recrusive_offset_finished;
+        auto z_panel_rows = ctx.cols_per_process;
+
+        if (gpu_index == ctx.mpi_config.rank) {
+            oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
+                         ctx.start_col * ctx.n + i + i * lda;
+            z_panel_rows = panel_m - ctx.cols_per_process * (rest_gpu_num - 1);
+        }
+
+        auto aw_panel = ctx.gpu_work.data() + ctx.n * ctx.nb;
+
+        if (z_panel_rows > 0) {
+            try {
+                matrix_ops::gemm(ctx.cublas_handle, z_panel_rows, ctx.b,
+                                 panel_m, (T)1, oriA_panel, lda, true,
+                                 ctx.gpu_work.data(), panel_m, false, (T)0,
+                                 aw_panel, z_panel_rows);
+            } catch (const std::exception& e) {
+                throw std::runtime_error(
+                    fmt::format("here aw gemm error exception: {}", e.what()));
+            } catch (...) {
+                throw std::runtime_error(
+                    "here aw gemm error: an unknown exception "
+                    "occurred");
+            }
+        }
+
+        std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
+
+        ncclGroupStart();
+        if (rank != gpu_index) {
+            ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
+                     ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
+        } else {
+            for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
+                z_recv[gpu_offset - 1].resize(ctx.cols_per_process * ctx.b);
+                auto gpu_id = gpu_index + gpu_offset;
+                ncclRecv(z_recv[gpu_offset - 1].data().get(),
+                         ctx.cols_per_process * ctx.b, ctx.nccl_type, gpu_id,
+                         ctx.nccl_comm, ctx.stream);
+            }
+        }
+        ncclGroupEnd();
+
+        cudaStreamSynchronize(ctx.stream);
+
+        if (rank == gpu_index) {
+            auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
+            if (z_panel_rows > 0) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    aw_panel, z_panel_rows, panel_Z_ptr, ldz, z_panel_rows,
+                    ctx.b);
+            }
+            for (auto index = 1; index < rest_gpu_num; index++) {
+                auto row_finished = (index - 1) * ctx.cols_per_process +
+                                    panel_m -
+                                    ctx.cols_per_process * (rest_gpu_num - 1);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    z_recv[index - 1].data(), ctx.cols_per_process,
+                    panel_Z_ptr + row_finished, ldz, ctx.cols_per_process,
+                    ctx.b);
+            }
+        }
+
+        MPI_Barrier(comm);
+    }
+}
+
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth,
                          matrix_ops::mpi::MpiSy2sbContext<T>& ctx) {
@@ -269,7 +397,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         return;
     }
 
-    auto mpi_comm = ctx.sub_mpi_comms[gpu_index];
+    auto& mpi_comm = ctx.sub_mpi_comms[gpu_index];
     auto& handle = ctx.cublas_handle;
     auto& cusolver_handle = ctx.cusolver_handle;
 
@@ -281,6 +409,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         Y = ctx.gpu_Y.data() + recrusive_offset - ctx.start_col * ctx.n;
         R = ctx.gpu_R.data() + recrusive_offset_finished;
         Z = ctx.gpu_Z.data();
+        work_ptr = ctx.gpu_work.data();
     }
 
     auto lda = ctx.n;
@@ -302,20 +431,73 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         panel_Z_ptr = Z + i + (i - ctx.b) * ldz;
 
         // process for this panel do the work
-        if (gpu_index == ctx.mpi_config.rank) {
-            matrix_ops::internal::sy2sb::panelQR(handle, ctx.cusolver_handle,
-                                                 panel_m, panel_n, panel_ptr,
-                                                 lda, R, lda, panel_W_ptr, ldw);
-            // copy panel data to panelY (using lda)
-            matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                    thrust::device_ptr<T>, T>(
-                panel_ptr, lda, panel_Y_ptr, ldy, panel_m, panel_n);
+        performPanelQrComputeWy<T>(ctx.mpi_config.rank, handle,
+                                   ctx.cusolver_handle, gpu_index, panel_m,
+                                   panel_n, panel_ptr, lda, R, ldr, panel_W_ptr,
+                                   ldw, panel_Y_ptr, ldy, mpi_comm);
 
-            // copy panelR data to panel (using lda)
-            matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                    thrust::device_ptr<T>, T>(
-                R, lda, panel_ptr, lda, panel_m, panel_n);
+        // compute AW distribution
+        performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
+                            panel_m, panel_n, i, lda, ldw, ldz,
+                            recrusive_offset, recrusive_offset_finished);
+
+        // compute all b panel update
+        if (ctx.mpi_config.rank == gpu_index) {
+            if (i == ctx.b) {
+                try {
+                    // panel_tmp = panel_z^T * panel_z
+                    matrix_ops::gemm(handle, ctx.b, ctx.b, panel_m, (T)1,
+                                     panel_W_ptr, ldw, true, panel_Z_ptr, ldz,
+                                     false, (T)0, work_ptr, ldwork);
+                    // panel_z = panel_z - panel_y * panel_z^T * panel_z
+                    matrix_ops::gemm(handle, panel_m, ctx.b, ctx.b, (T)(-0.5),
+                                     panel_Y_ptr, ldy, false, work_ptr, ldwork,
+                                     false, (T)1, panel_Z_ptr, ldz);
+                } catch (...) {
+                    throw std::runtime_error(
+                        "Error during initial panel update in sy2sb");
+                }
+            } else {
+                try {
+                    // panel_tmp = (Z + i)^T * panel_w
+                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)1,
+                                     Z + i, ldz, true, panel_W_ptr, ldw, false,
+                                     (T)0, work_ptr, ldwork);
+                    // panel_z = panel_z - Y+i * panel_z^T * panel_w
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
+                                     Y + i, ldy, false, work_ptr, ldwork, false,
+                                     (T)1, panel_Z_ptr, ldz);
+                    // panel_tmp = Y+i^T * panel_w
+                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)(1),
+                                     Y + i, ldy, true, panel_W_ptr, ldw, false,
+                                     (T)0, work_ptr, ldwork);
+                    // panel_z = panel_z - (Z + i) * Y+i^T * panel_w
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
+                                     Z + i, ldz, false, work_ptr, ldwork, false,
+                                     (T)1, panel_Z_ptr, ldz);
+                    // panel_tmp = panel_w^T * panel_z
+                    matrix_ops::gemm(handle, ctx.b, ctx.b, panel_m, (T)1,
+                                     panel_W_ptr, ldw, true, panel_Z_ptr, ldz,
+                                     false, (T)0, work_ptr, ldwork);
+                    // panel_z = panel_z - 0.5 * panel_y * panel_w^T * panel_z
+                    matrix_ops::gemm(handle, panel_m, ctx.b, ctx.b, (T)(-0.5),
+                                     panel_Y_ptr, ldy, false, work_ptr, ldwork,
+                                     false, (T)1, panel_Z_ptr, ldz);
+                } catch (...) {
+                    throw std::runtime_error("Error in gemm");
+                }
+            }
+            if (i < ctx.nb) {
+                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Y + i, ldy,
+                                 false, Z + i, ldz, true, (T)1, A + i + i * lda,
+                                 lda);
+
+                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Z + i, ldz,
+                                 false, Y + i, ldy, true, (T)1, A + i + i * lda,
+                                 lda);
+            }
         }
+        MPI_Barrier(ctx.sub_mpi_comms[gpu_index]);
     }
 
     // 递归终止条件检查 (参照分布式版本的位置)
@@ -331,7 +513,6 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
     // 5. 递归调用下一层
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
 }
-
 }  // namespace internal
 
 /**

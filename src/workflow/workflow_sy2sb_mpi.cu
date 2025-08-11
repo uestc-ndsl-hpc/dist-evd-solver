@@ -78,10 +78,6 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             auto A_d = matrix_ops::create_symmetric_random<T>(n, true);
             thrust::copy(A_d.begin(), A_d.end(), A_h.begin());
         }
-
-        if (util::MpiLogger::is_verbose() && n <= 256) {
-            matrix_ops::print(A_h.data(), n, n, n, "Initial matrix A");
-        }
     }
 
     // TODO: Perform symmetric-to-band (sy2sb) reduction using MPI
@@ -112,6 +108,7 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     // TODO: Validate results if requested
     if (validate) {
         // TODO: Implement validation logic
+        
     }
 
     // TODO: Cleanup and finalize MPI
