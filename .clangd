@@ -1,0 +1,12 @@
+CompileFlags:
+    Remove:
+        - '-forward-unknown-to-host-compiler'
+        - '--generate-code*'
+        - '-arch=*'
+        - '-Xcompiler=-fopenmp'
+    Add:
+        -  '--no-cuda-version-check'
+        -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/hpcx/latest/ompi/include'
+        -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/fmt-src/include'
+        -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/googletest-src/googlemock/include'
+        -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/googletest-src/googletest/include'

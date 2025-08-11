@@ -309,6 +309,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
 
         // process for this panel do the work
         if (gpu_index == ctx.mpi_config.rank) {
+            
         }
     }
 
