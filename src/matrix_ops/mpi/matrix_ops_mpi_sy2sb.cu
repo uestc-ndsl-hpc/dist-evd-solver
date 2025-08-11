@@ -256,6 +256,30 @@ void MpiSy2sbContext<T>::cleanup() {
 
 namespace internal {
 
+/**
+ * @brief Functor to copy the lower triangular part of a matrix to the upper
+ * triangular part.
+ *
+ * @tparam T Data type of the matrix elements.
+ */
+template <typename T>
+struct make_symmetric_functor {
+    thrust::device_ptr<T> A_;
+    size_t n_;
+    size_t lda_;
+
+    make_symmetric_functor(thrust::device_ptr<T> A, size_t n, size_t lda)
+        : A_(A), n_(n), lda_(lda) {}
+
+    __device__ void operator()(const size_t& k) const {
+        size_t j = k % n_;  // row
+        size_t i = k / n_;  // col
+        if (j < i) {
+            A_[j + i * lda_] = A_[i + j * lda_];
+        }
+    }
+};
+
 // 新提取的函数，用于执行面板QR分解和相关的数据复制
 template <typename T>
 void performPanelQrComputeWy(int rank, const common::CublasHandle& handle,
@@ -386,6 +410,205 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
 }
 
 template <typename T>
+void performInterRecursiveSyr2k(size_t recrusive_depth,
+                                matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
+                                size_t gpu_index, thrust::device_ptr<T> A,
+                                size_t lda, thrust::device_ptr<T> Y, size_t ldy,
+                                thrust::device_ptr<T> Z, size_t ldz) {
+    auto offset = (recrusive_depth + 1) * (ctx.nb + ctx.nb * ctx.n);
+    auto tail_gpu_start_index =
+        ctx.computeProcessForColumn((recrusive_depth + 1) * ctx.nb);
+    auto rest_gpu_num = ctx.mpi_config.size - gpu_index;
+    auto sub_matrix_n = ctx.n - (recrusive_depth + 1) * ctx.nb;
+    auto comm = ctx.sub_mpi_comms[gpu_index];
+    thrust::device_ptr<T> tail_matrix_ptr;
+    if (ctx.mpi_config.rank == tail_gpu_start_index) {
+        tail_matrix_ptr = ctx.gpu_oriA.data() + offset - ctx.start_col * ctx.n;
+    }
+    thrust::device_vector<T> z_send;
+    if (ctx.mpi_config.rank == gpu_index) {
+        z_send.resize(ctx.n * ctx.nb);
+    }
+    if (gpu_index == tail_gpu_start_index) {
+        if (rest_gpu_num == 1) {
+            if (ctx.mpi_config.rank == gpu_index) {
+                matrix_ops::syr2k(ctx.cublas_handle, sub_matrix_n, ctx.nb,
+                                  (T)(-1), Y + ctx.nb, ldy, Z + ctx.nb, ldz,
+                                  (T)1, tail_matrix_ptr, lda);
+
+                thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                                 thrust::make_counting_iterator<size_t>(
+                                     sub_matrix_n * sub_matrix_n),
+                                 make_symmetric_functor<T>(tail_matrix_ptr,
+                                                           sub_matrix_n, lda));
+
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    tail_matrix_ptr, ctx.n, A + ctx.nb + ctx.nb * lda, ctx.n,
+                    sub_matrix_n, sub_matrix_n);
+            }
+        } else {
+            if (ctx.mpi_config.rank == gpu_index) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Y + ctx.nb, lda, ctx.gpu_work.data(), sub_matrix_n,
+                    sub_matrix_n, ctx.nb);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Z + ctx.nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n,
+                    ctx.nb);
+            }
+            MPI_Barrier(comm);
+
+            auto z_bcast = ctx.gpu_Z.data();
+            if (ctx.mpi_config.rank == gpu_index) {
+                z_bcast = z_send.data();
+            }
+            ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
+                      ctx.nccl_comm, ctx.stream);
+            ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                      ctx.nccl_type, 0, ctx.nccl_comm, ctx.stream);
+            cudaStreamSynchronize(ctx.stream);
+
+            auto syr2k_panel_col = ctx.cols_per_process;
+            auto& syr2k_panel_handle = ctx.cublas_handle;
+            auto syr2k_panel_oriA_ptr =
+                ctx.gpu_oriA.data() + (ctx.n - sub_matrix_n);
+            auto dst_A_ptr = ctx.gpu_A.data() + (ctx.n - sub_matrix_n);
+            auto zy_panel_offset =
+                sub_matrix_n - (ctx.mpi_config.size - ctx.mpi_config.rank) *
+                                   ctx.cols_per_process;
+            if (ctx.mpi_config.rank == gpu_index) {
+                syr2k_panel_col =
+                    sub_matrix_n - (rest_gpu_num - 1) * ctx.cols_per_process;
+                syr2k_panel_oriA_ptr = tail_matrix_ptr;
+                dst_A_ptr = ctx.gpu_A.data() + offset - ctx.start_col * ctx.n;
+                zy_panel_offset = 0;
+            }
+
+            matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n, syr2k_panel_col,
+                             ctx.nb, T(-1), z_bcast, sub_matrix_n, false,
+                             ctx.gpu_work.data() + zy_panel_offset,
+                             sub_matrix_n, true, T(1), syr2k_panel_oriA_ptr,
+                             lda);
+            matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n, syr2k_panel_col,
+                             ctx.nb, T(-1), ctx.gpu_work.data(), sub_matrix_n,
+                             false, z_bcast + zy_panel_offset, sub_matrix_n,
+                             true, T(1), syr2k_panel_oriA_ptr, lda);
+
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
+                syr2k_panel_col);
+        }
+    } else {
+        if (rest_gpu_num == 1) {
+            if (ctx.mpi_config.rank == gpu_index) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Y + ctx.nb, lda, ctx.gpu_work.data(), sub_matrix_n,
+                    sub_matrix_n, ctx.nb);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Z + ctx.nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n,
+                    ctx.nb);
+            }
+
+            ncclGroupStart();
+            if (ctx.mpi_config.rank == gpu_index) {
+                ncclSend(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                         ctx.nccl_type, tail_gpu_start_index, ctx.nccl_comm,
+                         ctx.stream);
+            } else {
+                ncclRecv(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                         ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
+            }
+            ncclGroupEnd();
+
+            cudaStreamSynchronize(ctx.stream);
+
+            ncclGroupStart();
+            if (ctx.mpi_config.rank == gpu_index) {
+                ncclSend(z_send.data().get(), sub_matrix_n * ctx.nb,
+                         ctx.nccl_type, tail_gpu_start_index, ctx.nccl_comm,
+                         ctx.stream);
+            } else {
+                ncclRecv(ctx.gpu_Z.data().get(), sub_matrix_n * ctx.nb,
+                         ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
+            }
+            ncclGroupEnd();
+
+            cudaStreamSynchronize(ctx.stream);
+
+            if (ctx.mpi_config.rank == tail_gpu_start_index) {
+                matrix_ops::syr2k(ctx.cublas_handle, sub_matrix_n, ctx.nb,
+                                  (T)(-1), ctx.gpu_work.data(), sub_matrix_n,
+                                  ctx.gpu_Z.data(), sub_matrix_n, (T)1,
+                                  tail_matrix_ptr, lda);
+                thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                                 thrust::make_counting_iterator<size_t>(
+                                     sub_matrix_n * sub_matrix_n),
+                                 make_symmetric_functor<T>(tail_matrix_ptr,
+                                                           sub_matrix_n, lda));
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    tail_matrix_ptr, lda,
+                    ctx.gpu_A.data() + offset - ctx.cols_per_process * ctx.n,
+                    lda, sub_matrix_n, sub_matrix_n);
+            }
+        } else {
+            if (ctx.mpi_config.rank == gpu_index) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Y + ctx.nb, lda, ctx.gpu_work.data(), sub_matrix_n,
+                    sub_matrix_n, ctx.nb);
+
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    Z + ctx.nb, lda, z_send.data(), sub_matrix_n, sub_matrix_n,
+                    ctx.nb);
+            }
+            auto z_bcast = ctx.gpu_Z.data();
+            if (ctx.mpi_config.rank == gpu_index) {
+                z_bcast = z_send.data();
+            }
+            ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
+                      ctx.nccl_comm, ctx.stream);
+            ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                      ctx.nccl_type, 0, ctx.nccl_comm, ctx.stream);
+            cudaStreamSynchronize(ctx.stream);
+            if (ctx.mpi_config.rank != gpu_index) {
+                auto syr2k_panel_col = ctx.cols_per_process;
+                auto& syr2k_panel_handle = ctx.cublas_handle;
+                auto syr2k_panel_oriA_ptr =
+                    ctx.gpu_oriA.data() + (ctx.n - sub_matrix_n);
+                auto dst_A_ptr = ctx.gpu_A.data() + (ctx.n - sub_matrix_n);
+
+                auto zy_panel_offset =
+                    sub_matrix_n - (ctx.mpi_config.size - ctx.mpi_config.rank) *
+                                       ctx.cols_per_process;
+
+                matrix_ops::gemm(
+                    syr2k_panel_handle, sub_matrix_n, syr2k_panel_col, ctx.nb,
+                    T(-1), z_bcast, sub_matrix_n, false,
+                    ctx.gpu_work.data() + zy_panel_offset, sub_matrix_n, true,
+                    T(1), syr2k_panel_oriA_ptr, lda);
+                matrix_ops::gemm(syr2k_panel_handle, sub_matrix_n,
+                                 syr2k_panel_col, ctx.nb, T(-1),
+                                 ctx.gpu_work.data(), sub_matrix_n, false,
+                                 z_bcast + zy_panel_offset, sub_matrix_n, true,
+                                 T(1), syr2k_panel_oriA_ptr, lda);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    syr2k_panel_oriA_ptr, lda, dst_A_ptr, lda, sub_matrix_n,
+                    syr2k_panel_col);
+            }
+        }
+    }
+    MPI_Barrier(comm);
+}
+
+template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth,
                          matrix_ops::mpi::MpiSy2sbContext<T>& ctx) {
     // compute recrusive offset and panel related resources
@@ -497,20 +720,18 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
                                  lda);
             }
         }
-        MPI_Barrier(ctx.sub_mpi_comms[gpu_index]);
+        MPI_Barrier(mpi_comm);
     }
 
-    // 递归终止条件检查 (参照分布式版本的位置)
+    // recursive quit
     if (ctx.n <= ctx.nb + recrusive_offset_finished) {
         return;
     }
 
-    // TODO: 在这里需要添加类似分布式版本的矩阵更新逻辑 (syr2k等)
-    // 这是递归间的关键多进程操作
-    // performInterRecursiveSyr2k(ctx, recursive_depth,
-    // recursive_offset_finished);
+    performInterRecursiveSyr2k(recursive_depth, ctx, gpu_index, A, lda, Y, ldy,
+                               Z, ldz);
 
-    // 5. 递归调用下一层
+    // recursive call
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
 }
 }  // namespace internal
