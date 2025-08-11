@@ -101,19 +101,6 @@ namespace internal {
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth, MpiSy2sbContext<T>& ctx);
 
-template <typename T>
-void performPanelQR(MpiSy2sbContext<T>& ctx, size_t global_panel_col,
-                    size_t panel_m, size_t panel_n, size_t i,
-                    size_t recursive_offset_finished);
-
-template <typename T>
-void updateMatricesMPI(MpiSy2sbContext<T>& ctx, size_t i, size_t panel_m,
-                       size_t panel_n, size_t recursive_offset_finished);
-
-template <typename T>
-void updateAMatrixMPI(MpiSy2sbContext<T>& ctx, size_t i, size_t panel_m,
-                      size_t panel_n, size_t recursive_offset_finished);
-
 }  // namespace internal
 
 /**

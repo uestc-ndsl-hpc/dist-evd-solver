@@ -241,7 +241,7 @@ void sy2sb_recrusive(
                              ldz);
         }
 
-        matrix_ops::print(panel_Z_ptr, panel_m, b, ldz, "panel_Z");
+        // matrix_ops::print(panel_Z_ptr, panel_m, b, ldz, "panel_Z");
 
         if (i == b) {
             // panel_tmp = panel_z^T * panel_z

@@ -255,45 +255,27 @@ void MpiSy2sbContext<T>::cleanup() {
 
 namespace internal {
 
-// 函数声明
-template <typename T>
-void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                                size_t recursive_depth,
-                                size_t recursive_offset_finished);
-
-template <typename T>
-void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                         size_t min_participating_rank,
-                         const std::string& operation_name);
-
-template <typename T>
-void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                      size_t panel_m, size_t panel_n, size_t global_panel_col);
 
 // 内部函数实现
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth,
                          matrix_ops::mpi::MpiSy2sbContext<T>& ctx) {
-    
     // compute recrusive offset and panel related resources
     auto recrusive_offset_finished = ctx.nb * recursive_depth;
     auto recrusive_offset = (ctx.nb + ctx.nb * ctx.n) * recursive_depth;
-    auto gpu_index = ctx.computeProcessForColumn(recrusive_offset);
+    auto gpu_index = ctx.computeProcessForColumn(recrusive_offset_finished);
+
+    if (ctx.mpi_config.rank < gpu_index) {
+        return;
+    }
+
     auto mpi_comm = ctx.sub_mpi_comms[gpu_index];
     auto& handle = ctx.cublas_handle;
     auto& cusolver_handle = ctx.cusolver_handle;
 
-    if (ctx.mpi_config.rank < gpu_index) {
-        // TODO: 可以增加逻辑，包括但不限于 SBR-Back 之类的调度逻辑了
-        return;
-    }
-
-    util::MpiLogger::println("gpu-index {}", gpu_index);
-
     thrust::device_ptr<T> A, W, Y, Z, R, work_ptr;
 
     if (ctx.mpi_config.rank == gpu_index) {
-        util::MpiLogger::println("start_col {}", ctx.start_col);
         A = ctx.gpu_A.data() + recrusive_offset - ctx.start_col * ctx.n;
         W = ctx.gpu_W.data() + recrusive_offset - ctx.start_col * ctx.n;
         Y = ctx.gpu_Y.data() + recrusive_offset - ctx.start_col * ctx.n;
@@ -301,15 +283,38 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         Z = ctx.gpu_Z.data();
     }
 
+    auto lda = ctx.n;
+    auto ldw = ctx.n;
+    auto ldr = ctx.n;
+    auto ldy = ctx.n;
+    auto ldz = ctx.n;
+    auto ldwork = ctx.nb;
+
     // for-loop update with b panel
     for (auto i = ctx.b; i <= ctx.nb && i < ctx.n - recrusive_offset_finished;
          i += ctx.b) {
+        thrust::device_ptr<T> panel_ptr, panel_W_ptr, panel_Y_ptr, panel_Z_ptr;
         auto panel_m = ctx.n - recrusive_offset_finished - i;
         auto panel_n = ctx.b;
+        panel_ptr = A + i + (i - ctx.b) * lda;
+        panel_W_ptr = W + i + (i - ctx.b) * ldw;
+        panel_Y_ptr = Y + i + (i - ctx.b) * ldy;
+        panel_Z_ptr = Z + i + (i - ctx.b) * ldz;
 
         // process for this panel do the work
         if (gpu_index == ctx.mpi_config.rank) {
-            
+            matrix_ops::internal::sy2sb::panelQR(handle, ctx.cusolver_handle,
+                                                 panel_m, panel_n, panel_ptr,
+                                                 lda, R, lda, panel_W_ptr, ldw);
+            // copy panel data to panelY (using lda)
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                panel_ptr, lda, panel_Y_ptr, ldy, panel_m, panel_n);
+
+            // copy panelR data to panel (using lda)
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                R, lda, panel_ptr, lda, panel_m, panel_n);
         }
     }
 
@@ -322,338 +327,9 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
     // 这是递归间的关键多进程操作
     // performInterRecursiveSyr2k(ctx, recursive_depth,
     // recursive_offset_finished);
-    
 
     // 5. 递归调用下一层
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
-}
-
-template <typename T>
-void performPanelQR(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                    size_t global_panel_col, size_t panel_m, size_t panel_n,
-                    size_t i, size_t recursive_offset_finished) {
-    // 确定哪个进程拥有这个面板
-    size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
-
-    // 检查当前面板是否在本进程的列范围内
-    if (ctx.isLocalColumn(global_panel_col)) {
-        // 计算本地面板指针
-        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-        auto panel_ptr = ctx.gpu_A.data() + local_col * ctx.n + i;
-        auto panel_W_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-        auto panel_Y_ptr = ctx.gpu_Y.data() + local_col * ctx.n + i;
-        auto R_ptr = ctx.gpu_R.data() + recursive_offset_finished;
-
-        // 执行面板QR分解
-        matrix_ops::internal::sy2sb::panelQR(
-            ctx.cublas_handle, ctx.cusolver_handle, panel_m, panel_n, panel_ptr,
-            ctx.n,              // 使用 n 作为 lda
-            R_ptr, ctx.n,       // R 矩阵的 leading dimension
-            panel_W_ptr, ctx.n  // W 矩阵的 leading dimension
-        );
-
-        // 复制面板数据到 Y 矩阵 (保存 Q 的表示)
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(panel_ptr, ctx.n, panel_Y_ptr, ctx.n,
-                                   panel_m, panel_n);
-
-        // 复制 R 数据回面板位置
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(R_ptr, ctx.n, panel_ptr, ctx.n, panel_m,
-                                   panel_n);
-    }
-
-    // 使用层次化Barrier：只有参与的进程需要等待
-    // 这样可以让早完成的进程开始下一阶段工作
-    hierarchicalBarrier(ctx, owner_rank, "Panel-QR");
-}
-
-// W矩阵广播函数 - 使用层次化子通信组实现
-template <typename T>
-void broadcastWMatrix(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                      size_t panel_m, size_t panel_n, size_t global_panel_col) {
-    auto nccl_type = std::is_same_v<T, float> ? ncclFloat32 : ncclFloat64;
-    size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
-
-    // 获取W矩阵数据指针
-    thrust::device_ptr<T> w_source_ptr;
-    if (ctx.isLocalColumn(global_panel_col)) {
-        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-        w_source_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-    } else {
-        w_source_ptr = ctx.gpu_work.data();
-    }
-
-    // 根据面板所在的进程确定对应的子通信组
-    // 使用从owner_rank开始的子通信组，确保所有需要的进程都在组内
-    ncclResult_t result = ncclSuccess;
-
-    if (ctx.sub_comm_groups[owner_rank] != nullptr) {
-        // 使用owner_rank对应的子通信组进行广播
-        int sub_group_size = ctx.mpi_config.size - owner_rank;
-        int sub_owner_rank = 0;  // 在子组中owner_rank成为rank 0
-
-        result = ncclBcast(w_source_ptr.get(), panel_m * panel_n, nccl_type,
-                           sub_owner_rank, ctx.sub_comm_groups[owner_rank],
-                           ctx.stream);
-
-        if (result != ncclSuccess) {
-            throw std::runtime_error(
-                fmt::format("Sub-group NCCL Bcast failed for W matrix: {}",
-                            ncclGetErrorString(result)));
-        }
-    } else if (ctx.mpi_config.size == 1) {
-        // 单进程情况，无需广播
-
-    } else {
-        // 回退到主通信组（理论上不应发生，作为安全保护）
-        throw std::runtime_error(
-            fmt::format("Process {} falling back to main NCCL comm for W "
-                        "broadcast to rank {}",
-                        ctx.mpi_config.rank, owner_rank));
-    }
-
-    // 同步以确保广播完成
-    cudaStreamSynchronize(ctx.stream);
-
-    MPI_Barrier(ctx.sub_mpi_comms[owner_rank]);
-}
-
-// 多进程并行计算 A*W (类似分布式版本的 computeAwMgpu)
-template <typename T>
-void computeAwMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                  size_t panel_m, size_t panel_n,
-                  size_t recursive_offset_finished, size_t global_panel_col) {
-    // 每个进程处理自己的本地矩阵块
-    // 类似分布式版本中每个GPU处理自己的矩阵块
-
-    auto nccl_type = std::is_same_v<T, float> ? ncclFloat32 : ncclFloat64;
-    size_t owner_rank = ctx.computeProcessForColumn(global_panel_col);
-
-    // 获取当前面板的W数据指针 (已从broadcastWMatrix广播到gpu_work.data())
-    thrust::device_ptr<T> panel_W_ptr = ctx.gpu_work.data();
-
-    // 计算本地矩阵块的 A*W
-    auto local_oriA_ptr = ctx.gpu_oriA.data() + i + recursive_offset_finished;
-    auto local_aw_ptr = ctx.gpu_work.data() + ctx.n * ctx.nb;
-
-    // 执行 GEMM: local_aw = local_oriA * panel_W
-    matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process, panel_n, panel_m,
-                     T(1.0), local_oriA_ptr, ctx.n, false, panel_W_ptr, ctx.n,
-                     false, T(0.0), local_aw_ptr, ctx.cols_per_process);
-
-    // 使用点对点通信收集结果到拥有面板的进程
-    size_t elements_per_process = ctx.cols_per_process * panel_n;
-
-    if (ctx.mpi_config.rank == owner_rank) {
-        // 拥有面板的进程接收所有结果
-        size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-        auto gathered_ptr = ctx.gpu_Z.data() + local_col * ctx.n + i;
-
-        // 先复制本地结果
-        if (elements_per_process > 0) {
-            matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                    thrust::device_ptr<T>, T>(
-                local_aw_ptr, ctx.cols_per_process, gathered_ptr, ctx.n,
-                ctx.cols_per_process, panel_n);
-        }
-
-        // 接收其他进程的结果
-        for (size_t rank = 0; rank < ctx.mpi_config.size; rank++) {
-            if (rank == owner_rank) continue;
-
-            size_t offset = rank * ctx.cols_per_process;
-            auto recv_ptr = gathered_ptr + offset;
-
-            ncclResult_t recv_result =
-                ncclRecv(recv_ptr.get(), elements_per_process, nccl_type, rank,
-                         ctx.nccl_comm, ctx.stream);
-
-            if (recv_result != ncclSuccess) {
-                throw std::runtime_error(
-                    fmt::format("NCCL Recv failed from rank {}: {}", rank,
-                                ncclGetErrorString(recv_result)));
-            }
-        }
-    } else {
-        // 其他进程发送结果到拥有面板的进程
-        ncclResult_t send_result =
-            ncclSend(local_aw_ptr.get(), elements_per_process, nccl_type,
-                     owner_rank, ctx.nccl_comm, ctx.stream);
-
-        if (send_result != ncclSuccess) {
-            throw std::runtime_error(
-                fmt::format("NCCL Send failed to owner {}: {}", owner_rank,
-                            ncclGetErrorString(send_result)));
-        }
-    }
-
-    cudaStreamSynchronize(ctx.stream);
-}
-
-// 单进程的WY更新逻辑 (类似分布式版本面板循环内的gemm序列)
-template <typename T>
-void updateWYLogic(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                   size_t panel_m, size_t panel_n,
-                   size_t recursive_offset_finished, size_t global_panel_col) {
-    // 只有拥有当前面板的进程执行WY更新逻辑
-    if (!ctx.isLocalColumn(global_panel_col)) {
-        return;
-    }
-
-    size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-    auto panel_W_ptr = ctx.gpu_W.data() + local_col * ctx.n + i;
-    auto panel_Y_ptr = ctx.gpu_Y.data() + local_col * ctx.n + i;
-    auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ctx.n;
-    auto work_ptr = ctx.gpu_work.data();
-
-    if (i == ctx.b) {
-        // 第一个面板的处理逻辑
-        // panel_tmp = panel_W^T * panel_Z
-        matrix_ops::gemm(ctx.cublas_handle, panel_n, panel_n, panel_m, T(1.0),
-                         panel_W_ptr, ctx.n, true, panel_Z_ptr, ctx.n, false,
-                         T(0.0), work_ptr, panel_n);
-
-        // panel_Z = panel_Z - 0.5 * panel_Y * panel_tmp
-        matrix_ops::gemm(ctx.cublas_handle, panel_m, panel_n, panel_n, T(-0.5),
-                         panel_Y_ptr, ctx.n, false, work_ptr, panel_n, false,
-                         T(1.0), panel_Z_ptr, ctx.n);
-    } else {
-        // 后续面板的处理逻辑 (参照分布式版本的复杂gemm序列)
-        auto Z_prev = ctx.gpu_Z.data() + i;
-        auto Y_prev = ctx.gpu_Y.data() + i;
-
-        // panel_tmp = Z_prev^T * panel_W
-        matrix_ops::gemm(ctx.cublas_handle, i - ctx.b, panel_n, panel_m, T(1.0),
-                         Z_prev, ctx.n, true, panel_W_ptr, ctx.n, false, T(0.0),
-                         work_ptr, i - ctx.b);
-
-        // panel_Z = panel_Z - Y_prev * panel_tmp
-        matrix_ops::gemm(ctx.cublas_handle, panel_m, panel_n, i - ctx.b,
-                         T(-1.0), Y_prev, ctx.n, false, work_ptr, i - ctx.b,
-                         false, T(1.0), panel_Z_ptr, ctx.n);
-
-        // 继续其他gemm操作...
-        // (这里需要参照分布式版本的完整gemm序列)
-    }
-}
-
-template <typename T>
-void updateMatricesMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                       size_t panel_m, size_t panel_n,
-                       size_t recursive_offset_finished) {
-    size_t global_panel_col = recursive_offset_finished + (i - ctx.b);
-
-    // 1. 多进程并行计算 A*W
-    computeAwMPI(ctx, i, panel_m, panel_n, recursive_offset_finished,
-                 global_panel_col);
-
-    // 2. 单进程的WY更新逻辑
-    updateWYLogic(ctx, i, panel_m, panel_n, recursive_offset_finished,
-                  global_panel_col);
-}
-
-template <typename T>
-void updateAMatrixMPI(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, size_t i,
-                      size_t panel_m, size_t panel_n,
-                      size_t recursive_offset_finished) {
-    // 对应分布式版本中 if (i < nb) 部分的两个 gemm 操作
-    // 这些是单进程操作，只在拥有相应面板的进程上执行
-
-    size_t global_panel_col = recursive_offset_finished + (i - ctx.b);
-    if (!ctx.isLocalColumn(global_panel_col)) {
-        return;  // 其他进程不需要执行这些操作
-    }
-
-    size_t local_col = ctx.getLocalColumnIndex(global_panel_col);
-    auto panel_ptr = ctx.gpu_A.data() + local_col * ctx.n + i;
-    auto Y_prev = ctx.gpu_Y.data() + i;
-    auto Z_prev = ctx.gpu_Z.data() + i;
-
-    // 第一个gemm操作
-    matrix_ops::gemm(ctx.cublas_handle, panel_m, ctx.b, i, T(-1.0), Y_prev,
-                     ctx.n, false, ctx.gpu_R.data(), ctx.n, false, T(1.0),
-                     panel_ptr, ctx.n);
-
-    // 第二个gemm操作
-    matrix_ops::gemm(ctx.cublas_handle, panel_m, ctx.b, i, T(-1.0), Z_prev,
-                     ctx.n, false, ctx.gpu_R.data(), ctx.n, false, T(1.0),
-                     panel_ptr, ctx.n);
-}
-
-// 递归间的syr2k操作 (多进程并行，使用层次化通信优化)
-template <typename T>
-void performInterRecursiveSyr2k(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                                size_t recursive_depth,
-                                size_t recursive_offset_finished) {
-    auto nccl_type = std::is_same_v<T, float> ? ncclFloat32 : ncclFloat64;
-    size_t sub_matrix_n = ctx.n - recursive_offset_finished - ctx.nb;
-
-    if (sub_matrix_n <= 0) return;
-
-    // 使用层次化通信组进行更高效的数据分发
-    // 每个子组可以独立进行数据交换，减少通信开销
-
-    // 1. 准备Z和W数据用于syr2k
-    auto local_Z_ptr = ctx.gpu_Z.data() + ctx.nb;  // 跳过前nb行
-    auto local_W_ptr = ctx.gpu_work.data();
-
-    // 2. 使用层次化AllReduce：从大组到小组逐步聚合
-    // 这样可以减少通信延迟，提高带宽利用率
-    for (int group_start = 0; group_start < ctx.mpi_config.size;
-         group_start++) {
-        if (ctx.mpi_config.rank >= group_start &&
-            ctx.sub_comm_groups[group_start] != nullptr) {
-            // 在该子组内进行AllReduce
-            ncclAllReduce(local_Z_ptr.get(), local_Z_ptr.get(),
-                          sub_matrix_n * ctx.nb, nccl_type, ncclSum,
-                          ctx.sub_comm_groups[group_start], ctx.stream);
-
-            ncclAllReduce(local_W_ptr.get(), local_W_ptr.get(),
-                          sub_matrix_n * ctx.nb, nccl_type, ncclSum,
-                          ctx.sub_comm_groups[group_start], ctx.stream);
-
-            cudaStreamSynchronize(ctx.stream);
-            break;  // 只参与一个合适的子组
-        }
-    }
-
-    // 3. 执行本地的syr2k操作
-    auto tail_matrix_ptr =
-        ctx.gpu_A.data() + (ctx.n - sub_matrix_n) * ctx.cols_per_process;
-
-    matrix_ops::syr2k(ctx.cublas_handle, sub_matrix_n, ctx.nb, T(-1),
-                      local_W_ptr, sub_matrix_n, local_Z_ptr, sub_matrix_n,
-                      T(1), tail_matrix_ptr, ctx.n);
-
-    // 4. 对称性处理已移除（由后续操作保证）
-
-    // 5. 复制结果到oriA矩阵
-    matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>, T>(
-        tail_matrix_ptr, ctx.n,
-        ctx.gpu_oriA.data() + (ctx.n - sub_matrix_n) * ctx.cols_per_process,
-        ctx.n, sub_matrix_n, ctx.cols_per_process);
-}
-
-// 新增：层次化子通信组Barrier函数
-template <typename T>
-void hierarchicalBarrier(matrix_ops::mpi::MpiSy2sbContext<T>& ctx,
-                         size_t min_participating_rank,
-                         const std::string& operation_name) {
-    // 添加调试信息
-
-    // 只有参与该阶段的进程需要同步
-    if (ctx.mpi_config.rank >= min_participating_rank &&
-        min_participating_rank < ctx.sub_mpi_comms.size() &&
-        ctx.sub_mpi_comms[min_participating_rank] != MPI_COMM_NULL) {
-        MPI_Barrier(ctx.sub_mpi_comms[min_participating_rank]);
-
-    } else if (ctx.mpi_config.rank < min_participating_rank) {
-        // 早完成的进程可以继续下一阶段工作
-
-    } else {
-        // 调试：其他情况
-    }
 }
 
 }  // namespace internal
@@ -676,22 +352,7 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     // 调用递归实现
     internal::sy2sb_recursive_mpi<T>(0, ctx);
 
-    // 最终同步：确保所有进程完成
-    // 使用层次化同步：从小组到大组逐步同步，最后全局同步
-
-    // 先在各自的子组内同步
-    for (int group_start = mpi_config.size - 1; group_start >= 0;
-         group_start--) {
-        if (mpi_config.rank >= group_start &&
-            group_start < ctx.sub_mpi_comms.size() &&
-            ctx.sub_mpi_comms[group_start] != MPI_COMM_NULL) {
-            MPI_Barrier(ctx.sub_mpi_comms[group_start]);
-            break;  // 只参与一个子组同步
-        }
-    }
-
     // 最后全局同步确保所有进程完成
-
     MPI_Barrier(MPI_COMM_WORLD);
 }
 
