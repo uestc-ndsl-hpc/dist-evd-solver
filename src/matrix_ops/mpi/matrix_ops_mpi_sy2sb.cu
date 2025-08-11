@@ -335,9 +335,14 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
                 panel_W_ptr, ldw, ctx.gpu_work.data(), panel_m, panel_m, ctx.b);
         }
 
-        ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type, 0,
-                  ctx.nccl_comm, ctx.stream);
-        cudaStreamSynchronize(ctx.stream);
+        // 使用子通信组进行广播
+        auto& sub_comm = ctx.sub_comm_groups[gpu_index];
+        if (sub_comm != nullptr) {
+            // root进程在子通信组中的rank是0
+            ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type, 0,
+                      sub_comm, ctx.stream);
+            cudaStreamSynchronize(ctx.stream);
+        }
 
         auto oriA_panel = ctx.gpu_oriA.data() + i + recrusive_offset_finished;
         auto z_panel_rows = ctx.cols_per_process;
@@ -368,20 +373,24 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
 
         std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
 
-        ncclGroupStart();
-        if (rank != gpu_index) {
-            ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
-                     ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
-        } else {
-            for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
-                z_recv[gpu_offset - 1].resize(ctx.cols_per_process * ctx.b);
-                auto gpu_id = gpu_index + gpu_offset;
-                ncclRecv(z_recv[gpu_offset - 1].data().get(),
-                         ctx.cols_per_process * ctx.b, ctx.nccl_type, gpu_id,
-                         ctx.nccl_comm, ctx.stream);
+        // 使用子通信组进行Send/Recv
+        if (sub_comm != nullptr) {
+            ncclGroupStart();
+            if (rank != gpu_index) {
+                // 在子通信组中，目标进程的rank是0
+                ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
+                         ctx.nccl_type, 0, sub_comm, ctx.stream);
+            } else {
+                for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
+                    z_recv[gpu_offset - 1].resize(ctx.cols_per_process * ctx.b);
+                    // 在子通信组中，源进程的rank是 gpu_offset
+                    ncclRecv(z_recv[gpu_offset - 1].data().get(),
+                             ctx.cols_per_process * ctx.b, ctx.nccl_type,
+                             gpu_offset, sub_comm, ctx.stream);
+                }
             }
+            ncclGroupEnd();
         }
-        ncclGroupEnd();
 
         cudaStreamSynchronize(ctx.stream);
 
@@ -464,10 +473,13 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
             if (ctx.mpi_config.rank == gpu_index) {
                 z_bcast = z_send.data();
             }
-            ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
-                      ctx.nccl_comm, ctx.stream);
-            ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
-                      ctx.nccl_type, 0, ctx.nccl_comm, ctx.stream);
+            auto& sub_comm = ctx.sub_comm_groups[gpu_index];
+            if (sub_comm != nullptr) {
+                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
+                          sub_comm, ctx.stream);
+                ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                          ctx.nccl_type, 0, sub_comm, ctx.stream);
+            }
             cudaStreamSynchronize(ctx.stream);
 
             auto syr2k_panel_col = ctx.cols_per_process;
@@ -519,7 +531,7 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
                 ncclSend(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
                          ctx.nccl_type, tail_gpu_start_index, ctx.nccl_comm,
                          ctx.stream);
-            } else {
+            } else if (ctx.mpi_config.rank == tail_gpu_start_index) {
                 ncclRecv(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
                          ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
             }
@@ -532,7 +544,7 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
                 ncclSend(z_send.data().get(), sub_matrix_n * ctx.nb,
                          ctx.nccl_type, tail_gpu_start_index, ctx.nccl_comm,
                          ctx.stream);
-            } else {
+            } else if (ctx.mpi_config.rank == tail_gpu_start_index) {
                 ncclRecv(ctx.gpu_Z.data().get(), sub_matrix_n * ctx.nb,
                          ctx.nccl_type, gpu_index, ctx.nccl_comm, ctx.stream);
             }
@@ -572,10 +584,13 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
             if (ctx.mpi_config.rank == gpu_index) {
                 z_bcast = z_send.data();
             }
-            ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
-                      ctx.nccl_comm, ctx.stream);
-            ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
-                      ctx.nccl_type, 0, ctx.nccl_comm, ctx.stream);
+            auto& sub_comm = ctx.sub_comm_groups[gpu_index];
+            if (sub_comm != nullptr) {
+                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
+                          sub_comm, ctx.stream);
+                ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
+                          ctx.nccl_type, 0, sub_comm, ctx.stream);
+            }
             cudaStreamSynchronize(ctx.stream);
             if (ctx.mpi_config.rank != gpu_index) {
                 auto syr2k_panel_col = ctx.cols_per_process;
