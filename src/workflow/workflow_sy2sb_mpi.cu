@@ -103,8 +103,6 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     util::MpiLogger::toc("sy2sb_mpi_computation");
 
-    // TODO: Gather results back to root process
-
     // TODO: Validate results if requested
     if (validate) {
         // TODO: Implement validation logic

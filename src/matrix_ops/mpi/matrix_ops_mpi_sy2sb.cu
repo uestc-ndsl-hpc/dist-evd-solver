@@ -339,8 +339,8 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
         auto& sub_comm = ctx.sub_comm_groups[gpu_index];
         if (sub_comm != nullptr) {
             // root进程在子通信组中的rank是0
-            ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type, 0,
-                      sub_comm, ctx.stream);
+            ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type,
+                      0, sub_comm, ctx.stream);
             cudaStreamSynchronize(ctx.stream);
         }
 
@@ -381,7 +381,8 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
                 ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
                          ctx.nccl_type, 0, sub_comm, ctx.stream);
             } else {
-                for (auto gpu_offset = 1; gpu_offset < rest_gpu_num; gpu_offset++) {
+                for (auto gpu_offset = 1; gpu_offset < rest_gpu_num;
+                     gpu_offset++) {
                     z_recv[gpu_offset - 1].resize(ctx.cols_per_process * ctx.b);
                     // 在子通信组中，源进程的rank是 gpu_offset
                     ncclRecv(z_recv[gpu_offset - 1].data().get(),
@@ -475,8 +476,8 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
             }
             auto& sub_comm = ctx.sub_comm_groups[gpu_index];
             if (sub_comm != nullptr) {
-                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
-                          sub_comm, ctx.stream);
+                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type,
+                          0, sub_comm, ctx.stream);
                 ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
                           ctx.nccl_type, 0, sub_comm, ctx.stream);
             }
@@ -586,8 +587,8 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
             }
             auto& sub_comm = ctx.sub_comm_groups[gpu_index];
             if (sub_comm != nullptr) {
-                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type, 0,
-                          sub_comm, ctx.stream);
+                ncclBcast(z_bcast.get(), sub_matrix_n * ctx.nb, ctx.nccl_type,
+                          0, sub_comm, ctx.stream);
                 ncclBcast(ctx.gpu_work.data().get(), sub_matrix_n * ctx.nb,
                           ctx.nccl_type, 0, sub_comm, ctx.stream);
             }
@@ -770,7 +771,7 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     internal::sy2sb_recursive_mpi<T>(0, ctx);
 
     // 最后全局同步确保所有进程完成
-    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD)
 }
 
 }  // namespace mpi
