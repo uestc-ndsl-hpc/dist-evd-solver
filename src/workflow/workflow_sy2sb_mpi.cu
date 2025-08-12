@@ -141,21 +141,29 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     matrix_ops::mpi::MpiConfig mpi_config(rank, size, current_device,
                                           total_gpus);
 
-    // 执行 MPI sy2sb 算法
-    util::MpiLogger::tic("sy2sb_mpi_computation");
+    // 使用额外的作用域确保上下文在 MPI_Finalize() 之前析构
+    {
+        // 创建 MPI sy2sb 上下文
+        util::MpiLogger::tic("sy2sb_mpi_context_creation");
+        matrix_ops::mpi::MpiSy2sbContext<T> sy2sb_context(
+            mpi_config, n, A_h.data(), n, W_h.data(), n, Y_h.data(), n, nb, b);
+        util::MpiLogger::toc("sy2sb_mpi_context_creation");
 
-    matrix_ops::mpi::sy2sb<T>(mpi_config, n, A_h.data(), n, W_h.data(), n,
-                              Y_h.data(), n, nb, b);
+        // 执行 MPI sy2sb 算法
+        util::MpiLogger::tic("sy2sb_mpi_computation");
+        matrix_ops::mpi::sy2sb<T>(sy2sb_context);
+        util::MpiLogger::toc("sy2sb_mpi_computation");
 
-    util::MpiLogger::toc("sy2sb_mpi_computation");
-
-    // TODO: Validate results if requested
-    if (validate) {
-        // TODO: Implement validation logic
+        // TODO: Validate results if requested
+        if (validate) {
+            // TODO: Implement validation logic
+            
+        }
         
+        // 上下文会在这里自动析构
     }
 
-    // TODO: Cleanup and finalize MPI
+    // 在上下文析构之后再调用 MPI_Finalize
     MPI_Finalize();
 }
 

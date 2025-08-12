@@ -32,9 +32,7 @@ MpiSy2sbContext<T>::MpiSy2sbContext(const MpiConfig& config, size_t matrix_n,
       ldy(ldy_val),
       nb(nb_val),
       b(b_val),
-      A_host(A),
-      W_host(W),
-      Y_host(Y) {
+      A_host(A) {
     // 计算分块信息
     cols_per_process = n / mpi_config.size;
     start_col = mpi_config.rank * cols_per_process;
@@ -229,29 +227,45 @@ void MpiSy2sbContext<T>::copyHostToGpu() {
 
 template <typename T>
 void MpiSy2sbContext<T>::cleanup() {
+    // 首先确保所有CUDA操作完成
+    cudaDeviceSynchronize();
+    
     // 销毁所有子 NCCL 通信器
     for (size_t i = 0; i < sub_comm_groups.size(); i++) {
         if (sub_comm_groups[i] != nullptr) {
             ncclCommDestroy(sub_comm_groups[i]);
+            sub_comm_groups[i] = nullptr;
         }
     }
     sub_comm_groups.clear();
 
-    // 销毁所有子 MPI 通信器
-    for (size_t i = 0; i < sub_mpi_comms.size(); i++) {
-        if (sub_mpi_comms[i] != MPI_COMM_NULL) {
-            MPI_Comm_free(&sub_mpi_comms[i]);
+    // 销毁主 NCCL 通信器
+    if (nccl_comm != nullptr) {
+        ncclCommDestroy(nccl_comm);
+        nccl_comm = nullptr;
+    }
+
+    // 销毁所有子 MPI 通信器 - 使用更安全的方法
+    for (int start_rank = 0; start_rank < mpi_config.size; start_rank++) {
+        if (mpi_config.rank >= start_rank) {
+            // 检查通信器是否有效且不是MPI_COMM_NULL
+            if (sub_mpi_comms[start_rank] != MPI_COMM_NULL) {
+                try {
+                    MPI_Comm_free(&sub_mpi_comms[start_rank]);
+                } catch (...) {
+                    // 如果出现任何异常，设置为NULL并继续
+                    sub_mpi_comms[start_rank] = MPI_COMM_NULL;
+                }
+            }
         }
     }
     sub_mpi_comms.clear();
 
-    // 销毁主 NCCL 通信器
-    if (nccl_comm != nullptr) {
-        ncclCommDestroy(nccl_comm);
-    }
-
     // 销毁 CUDA 流
-    cudaStreamDestroy(stream);
+    if (stream != nullptr) {
+        cudaStreamDestroy(stream);
+        stream = nullptr;
+    }
 }
 
 namespace internal {
@@ -767,6 +781,15 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     // 创建 MPI sy2sb 上下文
     MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
 
+    // 调用重载版本
+    sy2sb(ctx);
+}
+
+/**
+ * @brief MPI 版本的 sy2sb 主函数（使用预创建的上下文）
+ */
+template <typename T>
+void sy2sb(MpiSy2sbContext<T>& ctx) {
     util::MpiLogger::tic("sy2sb mpi");
     // 调用递归实现
     internal::sy2sb_recursive_mpi<T>(0, ctx);
@@ -791,5 +814,11 @@ template void matrix_ops::mpi::sy2sb<double>(
     const matrix_ops::mpi::MpiConfig& mpi_config, size_t n, double* A,
     size_t lda, double* W, size_t ldw, double* Y, size_t ldy, size_t nb,
     size_t b);
+
+template void matrix_ops::mpi::sy2sb<float>(
+    matrix_ops::mpi::MpiSy2sbContext<float>& ctx);
+
+template void matrix_ops::mpi::sy2sb<double>(
+    matrix_ops::mpi::MpiSy2sbContext<double>& ctx);
 
 }  // namespace matrix_ops

@@ -45,8 +45,6 @@ class MpiSy2sbContext {
 
     // 主机内存指针
     T* A_host;
-    T* W_host;
-    T* Y_host;
 
     // GPU 资源 (每个进程一个 GPU)
     common::CublasHandle cublas_handle;
@@ -109,6 +107,12 @@ void sy2sb_recursive_mpi(size_t recursive_depth, MpiSy2sbContext<T>& ctx);
 template <typename T>
 void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
            size_t ldw, T* Y, size_t ldy, size_t nb = 64, size_t b = 16);
+
+/**
+ * @brief MPI 版本的 sy2sb 主函数（使用预创建的上下文）
+ */
+template <typename T>
+void sy2sb(MpiSy2sbContext<T>& ctx);
 
 }  // namespace mpi
 }  // namespace matrix_ops
