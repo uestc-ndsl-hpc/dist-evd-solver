@@ -41,7 +41,7 @@ void gemm(const common::CublasHandle& handle, size_t m, size_t n,
                 ldc);
 }
 
-// explicit instantiation
+// explicit instantiation for gemm with transpose parameters
 template void gemm<float>(const common::CublasHandle& handle, size_t m,
                                  size_t n, size_t k, float alpha,
                                  thrust::device_ptr<float> A, size_t lda,
@@ -53,5 +53,17 @@ template void gemm<double>(const common::CublasHandle& handle, size_t m,
                                   thrust::device_ptr<double> A, size_t lda,
                                   bool transA, thrust::device_ptr<double> B,
                                   size_t ldb, bool transB, double beta,
+                                  thrust::device_ptr<double> C, size_t ldc);
+
+// explicit instantiation for gemm without transpose parameters
+template void gemm<float>(const common::CublasHandle& handle, size_t m,
+                                 size_t n, size_t k, float alpha,
+                                 thrust::device_ptr<float> A, size_t lda,
+                                 thrust::device_ptr<float> B, size_t ldb, float beta,
+                                 thrust::device_ptr<float> C, size_t ldc);
+template void gemm<double>(const common::CublasHandle& handle, size_t m,
+                                  size_t n, size_t k, double alpha,
+                                  thrust::device_ptr<double> A, size_t lda,
+                                  thrust::device_ptr<double> B, size_t ldb, double beta,
                                   thrust::device_ptr<double> C, size_t ldc);
 }  // namespace matrix_ops

@@ -62,12 +62,58 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     // Synchronize all processes after GPU initialization
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // TODO: Warm-up cuBLAS to avoid initialization overhead in timing
+    // Warm-up cuBLAS to avoid initialization overhead in timing
     {
-        if (util::MpiLogger::is_verbose() && n <= 128) {
+        if (util::MpiLogger::is_verbose()) {
             util::MpiLogger::println("--- Performing cuBLAS warm-up ---");
         }
-        // TODO: Implement cuBLAS warm-up
+        
+        auto handle = common::CublasHandle();
+        const int warmup_size = 8192;
+        const int num_warmup_iterations = 3;
+        
+        // Allocate device memory for warm-up
+        thrust::device_vector<T> a_d(warmup_size * warmup_size);
+        thrust::device_vector<T> b_d(warmup_size * warmup_size);
+        thrust::device_vector<T> c_d(warmup_size * warmup_size);
+        
+        // Initialize with simple values
+        thrust::fill(a_d.begin(), a_d.end(), T(1.0));
+        thrust::fill(b_d.begin(), b_d.end(), T(1.0));
+        thrust::fill(c_d.begin(), c_d.end(), T(0.0));
+        
+        // Perform multiple GEMM operations for thorough warm-up
+        for (int i = 0; i < num_warmup_iterations; ++i) {
+            if (util::MpiLogger::is_verbose()) {
+                util::MpiLogger::println("  Warm-up iteration {}/{}", i + 1, num_warmup_iterations);
+            }
+            
+            try {
+                matrix_ops::gemm(handle, warmup_size, warmup_size, warmup_size,
+                                T(1.0), a_d.data(), warmup_size,
+                                b_d.data(), warmup_size, T(0.0),
+                                c_d.data(), warmup_size);
+                
+                // Synchronize to ensure operation completes
+                cudaError_t cuda_err = cudaDeviceSynchronize();
+                if (cuda_err != cudaSuccess) {
+                    util::MpiLogger::error("CUDA synchronization failed during warm-up: {}",
+                                           cudaGetErrorString(cuda_err));
+                    MPI_Finalize();
+                    return;
+                }
+            } catch (const std::exception& e) {
+                util::MpiLogger::error("cuBLAS warm-up GEMM operation failed: {}", e.what());
+                MPI_Finalize();
+                return;
+            }
+        }
+        
+        if (util::MpiLogger::is_verbose()) {
+            util::MpiLogger::println("--- cuBLAS warm-up completed successfully ---");
+        }
+        
+        // Device vectors will be automatically freed when they go out of scope
     }
 
     // Generate initial matrix A (symmetric) on rank 0
