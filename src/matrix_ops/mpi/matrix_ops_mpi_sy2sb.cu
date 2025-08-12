@@ -767,11 +767,13 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     // 创建 MPI sy2sb 上下文
     MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
 
+    util::MpiLogger::tic("sy2sb mpi");
     // 调用递归实现
     internal::sy2sb_recursive_mpi<T>(0, ctx);
+    util::MpiLogger::toc("sy2sb mpi");
 
     // 最后全局同步确保所有进程完成
-    MPI_Barrier(MPI_COMM_WORLD)
+    MPI_Barrier(MPI_COMM_WORLD);
 }
 
 }  // namespace mpi
