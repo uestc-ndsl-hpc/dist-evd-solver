@@ -67,52 +67,55 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         if (util::MpiLogger::is_verbose()) {
             util::MpiLogger::println("--- Performing cuBLAS warm-up ---");
         }
-        
+
         auto handle = common::CublasHandle();
         const int warmup_size = 8192;
         const int num_warmup_iterations = 3;
-        
+
         // Allocate device memory for warm-up
         thrust::device_vector<T> a_d(warmup_size * warmup_size);
         thrust::device_vector<T> b_d(warmup_size * warmup_size);
         thrust::device_vector<T> c_d(warmup_size * warmup_size);
-        
+
         // Initialize with simple values
         thrust::fill(a_d.begin(), a_d.end(), T(1.0));
         thrust::fill(b_d.begin(), b_d.end(), T(1.0));
         thrust::fill(c_d.begin(), c_d.end(), T(0.0));
-        
+
         // Perform multiple GEMM operations for thorough warm-up
         for (int i = 0; i < num_warmup_iterations; ++i) {
             if (util::MpiLogger::is_verbose()) {
-                util::MpiLogger::println("  Warm-up iteration {}/{}", i + 1, num_warmup_iterations);
+                util::MpiLogger::println("  Warm-up iteration {}/{}", i + 1,
+                                         num_warmup_iterations);
             }
-            
+
             try {
                 matrix_ops::gemm(handle, warmup_size, warmup_size, warmup_size,
-                                T(1.0), a_d.data(), warmup_size,
-                                b_d.data(), warmup_size, T(0.0),
-                                c_d.data(), warmup_size);
-                
+                                 T(1.0), a_d.data(), warmup_size, b_d.data(),
+                                 warmup_size, T(0.0), c_d.data(), warmup_size);
+
                 // Synchronize to ensure operation completes
                 cudaError_t cuda_err = cudaDeviceSynchronize();
                 if (cuda_err != cudaSuccess) {
-                    util::MpiLogger::error("CUDA synchronization failed during warm-up: {}",
-                                           cudaGetErrorString(cuda_err));
+                    util::MpiLogger::error(
+                        "CUDA synchronization failed during warm-up: {}",
+                        cudaGetErrorString(cuda_err));
                     MPI_Finalize();
                     return;
                 }
             } catch (const std::exception& e) {
-                util::MpiLogger::error("cuBLAS warm-up GEMM operation failed: {}", e.what());
+                util::MpiLogger::error(
+                    "cuBLAS warm-up GEMM operation failed: {}", e.what());
                 MPI_Finalize();
                 return;
             }
         }
-        
+
         if (util::MpiLogger::is_verbose()) {
-            util::MpiLogger::println("--- cuBLAS warm-up completed successfully ---");
+            util::MpiLogger::println(
+                "--- cuBLAS warm-up completed successfully ---");
         }
-        
+
         // Device vectors will be automatically freed when they go out of scope
     }
 
@@ -125,8 +128,6 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             thrust::copy(A_d.begin(), A_d.end(), A_h.begin());
         }
     }
-
-    // TODO: Perform symmetric-to-band (sy2sb) reduction using MPI
 
     // 广播矩阵数据到所有进程
     MPI_Bcast(A_h.data(), n * n,
@@ -141,6 +142,8 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     matrix_ops::mpi::MpiConfig mpi_config(rank, size, current_device,
                                           total_gpus);
 
+    matrix_ops::mpi::Sy2sbResultBuffers<T> sy2sb_result_buffers;
+
     // 使用额外的作用域确保上下文在 MPI_Finalize() 之前析构
     {
         // 创建 MPI sy2sb 上下文
@@ -154,13 +157,8 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         matrix_ops::mpi::sy2sb<T>(sy2sb_context);
         util::MpiLogger::toc("sy2sb_mpi_computation");
 
-        // TODO: Validate results if requested
-        if (validate) {
-            // TODO: Implement validation logic
-            
-        }
-        
-        // 上下文会在这里自动析构
+        // 保留 A, W, Y 缓冲区，释放其他所有资源
+        sy2sb_result_buffers = std::move(sy2sb_context.release_sy2sb_buffers());
     }
 
     // 在上下文析构之后再调用 MPI_Finalize

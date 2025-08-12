@@ -26,6 +26,15 @@ struct MpiConfig {
 /**
  * @brief MPI sy2sb 算法的参数和资源管理类
  */
+
+// 用于保存 sy2sb 计算结果缓冲区的结构体
+template <typename T>
+struct Sy2sbResultBuffers {
+    thrust::device_vector<T> A;
+    thrust::device_vector<T> W;
+    thrust::device_vector<T> Y;
+};
+
 template <typename T>
 class MpiSy2sbContext {
    public:
@@ -75,6 +84,9 @@ class MpiSy2sbContext {
                     size_t nb_val, size_t b_val);
 
     ~MpiSy2sbContext();
+
+    // 释放主要的 GPU 缓冲区，将所有权转移给调用者
+    Sy2sbResultBuffers<T> release_sy2sb_buffers();
 
     // 工具函数：计算给定列偏移对应的MPI进程
     size_t computeProcessForColumn(size_t col_offset) const;

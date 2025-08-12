@@ -53,6 +53,11 @@ MpiSy2sbContext<T>::~MpiSy2sbContext() {
     cleanup();
 }
 
+template <typename T>
+Sy2sbResultBuffers<T> MpiSy2sbContext<T>::release_sy2sb_buffers() {
+    return {std::move(gpu_A), std::move(gpu_W), std::move(gpu_Y)};
+}
+
 // 工具函数：计算给定列偏移对应的MPI进程
 template <typename T>
 size_t MpiSy2sbContext<T>::computeProcessForColumn(size_t col_offset) const {
@@ -794,9 +799,6 @@ void sy2sb(MpiSy2sbContext<T>& ctx) {
     // 调用递归实现
     internal::sy2sb_recursive_mpi<T>(0, ctx);
     util::MpiLogger::toc("sy2sb mpi");
-
-    // 最后全局同步确保所有进程完成
-    MPI_Barrier(MPI_COMM_WORLD);
 }
 
 }  // namespace mpi
