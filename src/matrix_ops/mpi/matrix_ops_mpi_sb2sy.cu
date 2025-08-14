@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include "log.h"
+#include "matrix_ops.cuh"
 #include "matrix_ops_mpi.cuh"
 
 namespace matrix_ops {
@@ -34,7 +35,7 @@ MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
     cols_per_process = n / mpi_config.size;
     start_col = mpi_config.rank * cols_per_process;
     local_matrix_size = cols_per_process * n;
-    
+
     // Initialize q_cols vector with proper size
     q_cols.resize(mpi_config.size);
     std::fill(q_cols.begin(), q_cols.end(), cols_per_process);
@@ -55,7 +56,7 @@ MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
     gpu_Q.resize(q_cols[mpi_config.rank] * n);
     gpu_W_rec.resize(local_matrix_size);
     gpu_Y_rec.resize(local_matrix_size);
-    
+
     // Initialize Q matrix as identity matrix
     initializeQMatrix();
 
@@ -73,16 +74,16 @@ void MpiSb2syGenQContext<T>::initializeQMatrix() {
     for (int i = 0; i < mpi_config.rank; i++) {
         base_offset += q_cols[i];
     }
-    
+
     // Copy member variables to local variables for device lambda
     auto local_n = n;
     auto local_base_offset = base_offset;
     auto gpu_Q_ptr = thrust::raw_pointer_cast(gpu_Q.data());
-    
+
     thrust::for_each(
         thrust::make_counting_iterator<size_t>(0),
         thrust::make_counting_iterator<size_t>(q_cols[mpi_config.rank] * n),
-        [=] __device__ (size_t idx) {
+        [=] __device__(size_t idx) {
             auto row = idx % local_n;
             auto col = idx / local_n;
             if (local_base_offset + col == row) {
@@ -145,14 +146,10 @@ template <typename T>
 void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
     util::MpiLogger::println("开始计算");
 
-    auto W = ctx.gpu_W.data();
-    auto Y = ctx.gpu_Y.data();
-
-    // auto W = ctx.gpu_W.data() + ctx.mpi_config.rank * ctx.cols_per_process;
-    // auto Y = ctx.gpu_Y.data() + ctx.mpi_config.rank * ctx.cols_per_process;
+    auto W = ctx.gpu_W.data() + ctx.mpi_config.rank * ctx.cols_per_process;
+    auto Y = ctx.gpu_Y.data() + ctx.mpi_config.rank * ctx.cols_per_process;
     auto work = ctx.gpu_work.data();
-    // auto m = ctx.n - ctx.mpi_config.rank * ctx.cols_per_process;
-    auto m = ctx.n;
+    auto m = ctx.n - ctx.mpi_config.rank * ctx.cols_per_process;
     auto b = ctx.b;
     auto ldW = ctx.ldw;
     auto ldY = ctx.ldy;
@@ -196,7 +193,49 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // I - WY 左乘, 是一个依次的发送到乘的故事
+    // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事
+    for (auto i = 0; i < ctx.mpi_config.size; ++i) {
+        auto wy_gpu_id = ctx.mpi_config.local_gpu_id - 1 - i;
+        if (wy_gpu_id == ctx.mpi_config.local_gpu_id) {
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                Y, ctx.ldy, ctx.gpu_Y_rec.data(), m, m, ctx.cols_per_process);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                W, ctx.ldw, ctx.gpu_W_rec.data(), m, m, ctx.cols_per_process);
+        }
+        ncclBcast(ctx.gpu_Y_rec.data().get(), ctx.n, ctx.nccl_type, wy_gpu_id,
+                  ctx.nccl_comm, ctx.stream);
+        ncclBcast(ctx.gpu_W_rec.data().get(), ctx.n, ctx.nccl_type, wy_gpu_id,
+                  ctx.nccl_comm, ctx.stream);
+        cudaStreamSynchronize(ctx.stream);
+
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(
+            ctx.gpu_Y_rec.data(), m,
+            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
+            ctx.n, m, ctx.cols_per_process);
+
+        matrix_ops::gemm(
+            ctx.cublas_handle, ctx.cols_per_process,
+            ctx.q_cols[ctx.mpi_config.local_gpu_id], ctx.n, T(1.0),
+            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
+            ctx.n, true, ctx.gpu_Q.data(), ctx.n, false, T(0.0),
+            ctx.gpu_Y_rec.data(), ctx.n);
+
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(
+            ctx.gpu_W_rec.data(), m,
+            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
+            ctx.n, m, ctx.cols_per_process);
+
+        matrix_ops::gemm(
+            ctx.cublas_handle, ctx.n, ctx.cols_per_process,
+            ctx.q_cols[ctx.cols_per_process], T(-1.0), ctx.gpu_W_rec.data(),
+            ctx.n,
+            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
+            ctx.n, T(1.0), ctx.gpu_Q.data(), ctx.n);
+    }
 
     return;
 }
