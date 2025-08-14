@@ -8,7 +8,7 @@
 
 template <typename T>
 void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
-                            size_t b) {
+                            size_t b, bool debug) {
     // Initialize MPI environment
     int provided;
     MPI_Init_thread(nullptr, nullptr, MPI_THREAD_MULTIPLE, &provided);
@@ -161,12 +161,25 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         sy2sb_result_buffers = std::move(sy2sb_context.release_sy2sb_buffers());
     }
 
+    if (debug) {
+        for (auto i = 0; i < mpi_config.size; ++i) {
+            if (i == rank) {
+                matrix_ops::print(
+                    sy2sb_result_buffers.W, n, n / mpi_config.size,
+                    fmt::format("[rank:{}] W matrix after sy2sb", rank));
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+        }
+    }
+
     // 在上下文析构之后再调用 MPI_Finalize
     MPI_Finalize();
 }
 
 // Explicit template instantiation
 template void run_workflow_sy2sb_mpi<float>(size_t n, bool validate,
-                                            int num_gpus, size_t nb, size_t b);
+                                            int num_gpus, size_t nb, size_t b,
+                                            bool debug);
 template void run_workflow_sy2sb_mpi<double>(size_t n, bool validate,
-                                             int num_gpus, size_t nb, size_t b);
+                                             int num_gpus, size_t nb, size_t b,
+                                             bool debug);

@@ -30,9 +30,18 @@ struct MpiConfig {
 // 用于保存 sy2sb 计算结果缓冲区的结构体
 template <typename T>
 struct Sy2sbResultBuffers {
+    // GPU 显存
     thrust::device_vector<T> A;
     thrust::device_vector<T> W;
     thrust::device_vector<T> Y;
+    // 算法参数
+    size_t n;
+    size_t lda, ldw, ldy;
+    size_t nb, b;
+    // 通信器组
+    ncclComm_t nccl_comm;                     // 主通信器
+    std::vector<ncclComm_t> sub_comm_groups;  // 层次化子通信组
+    std::vector<MPI_Comm> sub_mpi_comms;      // 对应的MPI子通信器
 };
 
 template <typename T>
@@ -71,11 +80,11 @@ class MpiSy2sbContext {
 
     // NCCL 通信器
     ncclComm_t nccl_comm;
-    
+
     // 层次化子通信组：支持流水线并行
     // sub_comm_groups[i] 表示从进程i开始到最后的通信组 [i, i+1, ..., size-1]
     std::vector<ncclComm_t> sub_comm_groups;
-    
+
     // 对应的MPI子通信器：用于MPI_Barrier等同步操作
     std::vector<MPI_Comm> sub_mpi_comms;
 
@@ -106,7 +115,6 @@ class MpiSy2sbContext {
 };
 
 namespace internal {
-
 // 内部函数声明
 template <typename T>
 void sy2sb_recursive_mpi(size_t recursive_depth, MpiSy2sbContext<T>& ctx);

@@ -55,7 +55,23 @@ MpiSy2sbContext<T>::~MpiSy2sbContext() {
 
 template <typename T>
 Sy2sbResultBuffers<T> MpiSy2sbContext<T>::release_sy2sb_buffers() {
-    return {std::move(gpu_A), std::move(gpu_W), std::move(gpu_Y)};
+    Sy2sbResultBuffers<T> result{std::move(gpu_A),
+                                 std::move(gpu_W),
+                                 std::move(gpu_Y),
+                                 n,
+                                 lda,
+                                 ldw,
+                                 ldy,
+                                 nb,
+                                 b,
+                                 nccl_comm,
+                                 std::move(sub_comm_groups),
+                                 std::move(sub_mpi_comms)};
+    // 将所有通信器置空，避免析构函数重复释放
+    nccl_comm = nullptr;
+    sub_comm_groups.clear();
+    sub_mpi_comms.clear();
+    return result;
 }
 
 // 工具函数：计算给定列偏移对应的MPI进程
@@ -171,8 +187,6 @@ void MpiSy2sbContext<T>::initCommunication() {
 
         } else {
             sub_comm_groups[start_rank] = nullptr;
-            // sub_mpi_comms[start_rank]
-            // 已经在MPI_Comm_split中设置为MPI_COMM_NULL
         }
     }
 }
@@ -234,8 +248,8 @@ template <typename T>
 void MpiSy2sbContext<T>::cleanup() {
     // 首先确保所有CUDA操作完成
     cudaDeviceSynchronize();
-    
-    // 销毁所有子 NCCL 通信器
+
+    // 销毁所有子 NCCL 通信器（如果没有被 move 走）
     for (size_t i = 0; i < sub_comm_groups.size(); i++) {
         if (sub_comm_groups[i] != nullptr) {
             ncclCommDestroy(sub_comm_groups[i]);
@@ -244,27 +258,32 @@ void MpiSy2sbContext<T>::cleanup() {
     }
     sub_comm_groups.clear();
 
-    // 销毁主 NCCL 通信器
+    // 销毁主 NCCL 通信器（如果没有被 move 走）
     if (nccl_comm != nullptr) {
         ncclCommDestroy(nccl_comm);
         nccl_comm = nullptr;
     }
 
-    // 销毁所有子 MPI 通信器 - 使用更安全的方法
-    for (int start_rank = 0; start_rank < mpi_config.size; start_rank++) {
-        if (mpi_config.rank >= start_rank) {
-            // 检查通信器是否有效且不是MPI_COMM_NULL
-            if (sub_mpi_comms[start_rank] != MPI_COMM_NULL) {
-                try {
-                    MPI_Comm_free(&sub_mpi_comms[start_rank]);
-                } catch (...) {
-                    // 如果出现任何异常，设置为NULL并继续
-                    sub_mpi_comms[start_rank] = MPI_COMM_NULL;
+    // 销毁所有子 MPI 通信器 - 检查容器是否为空（防止访问已移动的资源）
+    if (!sub_mpi_comms.empty()) {
+        for (int start_rank = 0;
+             start_rank < mpi_config.size &&
+             start_rank < static_cast<int>(sub_mpi_comms.size());
+             start_rank++) {
+            if (mpi_config.rank >= start_rank) {
+                // 检查通信器是否有效且不是MPI_COMM_NULL
+                if (sub_mpi_comms[start_rank] != MPI_COMM_NULL) {
+                    try {
+                        MPI_Comm_free(&sub_mpi_comms[start_rank]);
+                    } catch (...) {
+                        // 如果出现任何异常，设置为NULL并继续
+                        sub_mpi_comms[start_rank] = MPI_COMM_NULL;
+                    }
                 }
             }
         }
+        sub_mpi_comms.clear();
     }
-    sub_mpi_comms.clear();
 
     // 销毁 CUDA 流
     if (stream != nullptr) {

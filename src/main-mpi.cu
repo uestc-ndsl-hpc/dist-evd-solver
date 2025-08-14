@@ -23,6 +23,7 @@ int main(int argc, char** argv) {
                   "  -b, --b <size>         Panel size (default: 16)\n"
                   "  -v, --verbose          Enable verbose output\n"
                   "  -t, --time             Enable timing output\n"
+                  "  -d, --debug            Enable debug output\n"
                   "  --validate             Enable result validation\n"
                   "  --double               Use double precision\n"
                   "  --float                Use single precision (default)\n"
@@ -32,6 +33,7 @@ int main(int argc, char** argv) {
 
     const bool verbose = cmdl[{"-v", "--verbose"}];
     const bool print_time = cmdl[{"-t", "--time"}];
+    const bool debug = cmdl[{"-d", "--debug"}];
     const bool validate = cmdl[{"--validate"}];
 
     auto n = (size_t)4;
@@ -53,11 +55,11 @@ int main(int argc, char** argv) {
     util::Logger::init_timer(print_time);
 
     if (cmdl[{"--double"}]) {
-        run_workflow_sy2sb_mpi<double>(n, validate, gpu_num, nb, b);
+        run_workflow_sy2sb_mpi<double>(n, validate, gpu_num, nb, b, debug);
     } else if (cmdl[{"--float"}]) {
-        run_workflow_sy2sb_mpi<float>(n, validate, gpu_num, nb, b);
+        run_workflow_sy2sb_mpi<float>(n, validate, gpu_num, nb, b, debug);
     } else {
-        run_workflow_sy2sb_mpi<float>(n, validate, gpu_num, nb, b);
+        run_workflow_sy2sb_mpi<float>(n, validate, gpu_num, nb, b, debug);
     }
 
     return 0;

@@ -4,6 +4,7 @@ CompileFlags:
         - '--generate-code*'
         - '-arch=*'
         - '-Xcompiler=-fopenmp'
+        -  '--extended-lambda'
     Add:
         -  '--no-cuda-version-check'
         -  '--cuda-path=/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda'
