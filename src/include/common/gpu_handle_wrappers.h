@@ -2,7 +2,7 @@
 
 #include <cublas_v2.h>
 #include <cusolverDn.h>
-
+#include <cublasXt.h>
 #include <stdexcept>
 
 namespace common {
@@ -130,6 +130,68 @@ class CusolverDnHandle {
 
    private:
     cusolverDnHandle_t handle_{nullptr};
+};
+
+/**
+ * @class CublasXtHandle
+ * @brief A RAII wrapper for a cuBLAS Xt handle.
+ *
+ * This class ensures that a cuBLAS Xt handle is properly created and destroyed.
+ * It follows the Rule of Five: move semantics are enabled, but copy
+ * semantics are disabled to prevent double-destruction of the handle.
+ */
+class CublasXtHandle {
+   public:
+    CublasXtHandle() {
+        if (cublasXtCreate(&handle_) != CUBLAS_STATUS_SUCCESS) {
+            throw std::runtime_error("Failed to create cuBLAS Xt handle.");
+        }
+    }
+
+    ~CublasXtHandle() {
+        if (handle_) {
+            // It's generally safe to call cublasXtDestroy on a valid handle.
+            // We don't need to check the return status in a destructor.
+            cublasXtDestroy(handle_);
+        }
+    }
+
+    // Disable copy constructor and copy assignment operator
+    CublasXtHandle(const CublasXtHandle&) = delete;
+    CublasXtHandle& operator=(const CublasXtHandle&) = delete;
+
+    // Enable move constructor
+    CublasXtHandle(CublasXtHandle&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+
+    // Enable move assignment operator
+    CublasXtHandle& operator=(CublasXtHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle_) {
+                cublasXtDestroy(handle_);
+            }
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    /**
+     * @brief Get the underlying cuBLAS Xt handle.
+     * @return The raw cublasXtHandle_t.
+     */
+    cublasXtHandle_t get() const { return handle_; }
+
+    /**
+     * @brief Implicit conversion to the underlying cuBLAS Xt handle.
+     *
+     * This allows the object to be used directly in cuBLAS Xt API calls.
+     */
+    operator cublasXtHandle_t() const { return handle_; }
+
+   private:
+    cublasXtHandle_t handle_{nullptr};
 };
 
 }  // namespace common

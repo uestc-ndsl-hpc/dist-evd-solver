@@ -24,18 +24,15 @@ int main(int argc, char** argv) {
     auto m = n;
     cmdl({"-m", "--m"}, n) >> m;
 
-    auto gpu_num = 2;
-    cmdl({"-g", "--gpu-num"}, 2) >> gpu_num;
-
     if (cmdl[{"--double"}]) {
         util::Logger::println("Using double precision");
-        run_workflow_sy2sb_dist<double>(n, validate, gpu_num);
+        run_workflow_sy2sb<double>(n, validate);
     } else if (cmdl[{"--float"}]) {
         util::Logger::println("Using single precision");
-        run_workflow_sy2sb_dist<float>(n, validate, gpu_num);
+        run_workflow_sy2sb<float>(n, validate);
     } else {
         util::Logger::println("Using default precision");
-        run_workflow_sy2sb_dist<float>(n, validate, gpu_num);
+        run_workflow_sy2sb<float>(n, validate);
     }
 
     return 0;

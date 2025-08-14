@@ -15,6 +15,20 @@
 #include <string>
 
 #include "gpu_handle_wrappers.h"
+#include "log.h"
+
+// fmt::formatter for cublasStatus_t
+template <>
+struct fmt::formatter<cublasStatus_t> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+
+    template <typename FormatContext>
+    auto format(const cublasStatus_t& status, FormatContext& ctx) const {
+        // 调用我们放在 util 命名空间中的辅助函数
+        return fmt::format_to(ctx.out(), "{}",
+                              util::cublasGetErrorString(status));
+    }
+};
 
 namespace matrix_ops {
 
@@ -80,6 +94,32 @@ void gemm(const common::CublasHandle& handle, size_t m, size_t n, size_t k,
 template <typename srcPtr, typename dstPtr, typename T>
 void matrix_copy(srcPtr src, size_t src_ld, dstPtr dst, size_t dst_ld, size_t m,
                  size_t n);
+
+/**
+ * @brief print matrix for row = m, col = n, and the input is host ptr (column
+ * major and lda provided)
+ *
+ * @tparam T type of the matrix elements
+ * @param data host ptr
+ * @param m number of rows
+ * @param n number of columns
+ * @param lda leading dimension of the matrix
+ * @param title title of the matrix
+ */
+template <typename T>
+void print(T* data, size_t m, size_t n, size_t lda, const std::string& title);
+
+/**
+ * @brief print matrix for row = m, col = n, and the input is host ptr
+ *
+ * @tparam T
+ * @param data host ptr
+ * @param m number of rows
+ * @param n number of columns
+ * @param title title of the matrix
+ */
+template <typename T>
+void print(T* data, size_t m, size_t n, const std::string& title);
 
 /**
  * @brief print matrix for row = col = n (column major)
@@ -150,7 +190,8 @@ void print(thrust::device_vector<T> h_vec, size_t m, size_t n, size_t lda,
            const std::string& title);
 
 template <typename T>
-thrust::device_vector<T> create_symmetric_random(size_t n, bool fixed_seed = false);
+thrust::device_vector<T> create_symmetric_random(size_t n,
+                                                 bool fixed_seed = false);
 
 template <typename T>
 thrust::device_vector<T> create_uniform_random(size_t n);

@@ -3,10 +3,9 @@
 #include <cstddef>
 
 #include "gpu_handle_wrappers.h"
-#include "internal/sy2sb/sy2sb_panelqr.cuh"
-#include "matrix_ops.cuh"
-
 #include "log.h"
+#include "matrix_ops.cuh"
+#include "sy2sb_panelqr.cuh"
 
 namespace matrix_ops {
 
@@ -101,14 +100,12 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
         auto panel_ptr = A + i + (i - b) * lda;
 
         auto panel_W_ptr = W + i + (i - b) * ldw;
-        auto panel_R_ptr = R + i + (i - b) * ldr;
         auto panel_Y_ptr = Y + i + (i - b) * ldy;
         auto panel_Z_ptr = Z + i + (i - b) * ldz;
 
         // compute the panel QR
         internal::sy2sb::panelQR(cublasHandle, cusolverHandle, panel_m, panel_n,
-                                 panel_ptr, lda, panel_R_ptr, ldr, panel_W_ptr,
-                                 ldw);
+                                 panel_ptr, lda, R, ldr, panel_W_ptr, ldw);
 
         // copy panel data to panelY (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
@@ -117,14 +114,12 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
 
         // copy panelR data to panel (using lda)
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(panel_R_ptr, ldr, panel_ptr, lda, panel_m,
-                                   panel_n);
+                                T>(R, ldr, panel_ptr, lda, panel_m, panel_n);
 
         // update A by ZY mode
         // first panel process
-
+        auto panel_OriA_ptr = oriA + i * ldoA + i;
         if (i == b) {
-            auto panel_OriA_ptr = oriA + b * ldoA + b;
             // panel_z = panel_oa * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,
@@ -138,7 +133,6 @@ void sy2sb_recrusive(const common::CublasHandle& cublasHandle,
                              panel_Y_ptr, ldy, false, work_ptr, ldwork, false,
                              (T)1, panel_Z_ptr, ldz);
         } else {
-            auto panel_OriA_ptr = oriA + i * ldoA + i;
             // panel_z = panel_oa * panel_w
             matrix_ops::gemm(cublasHandle, panel_m, b, panel_m, (T)1,
                              panel_OriA_ptr, ldoA, false, panel_W_ptr, ldw,

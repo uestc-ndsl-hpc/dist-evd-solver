@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.22)
 
 project(dist-evd-solver LANGUAGES CXX CUDA)
 
@@ -40,8 +40,11 @@ FetchContent_MakeAvailable(fmt argh googletest)
 
 
 # --- 核心依赖 ---
-find_package(NVHPC REQUIRED COMPONENTS MATH CUDA)
+find_package(NVHPC REQUIRED)
 
+find_package(OpenMP REQUIRED)
+
+find_package(MPI REQUIRED)
 
 # --- 项目库定义 ---
 add_library(dist-evd-solver-lib
@@ -53,12 +56,20 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/matrix_ops_gemm.cu
     src/matrix_ops/matrix_ops_syr2k.cu
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
+    src/matrix_ops/dist/matrix_ops_dist_sy2sb.cu
+    src/matrix_ops/mpi/matrix_ops_mpi_sy2sb.cu
 )
 
 target_include_directories(dist-evd-solver-lib
     PUBLIC
         src/include
+        src/include/common
+        src/include/matrix_ops/internal/sy2sb
+        src/include/matrix_ops
+    PRIVATE
+        ${MPI_CXX_INCLUDE_DIRS}
 )
+
 
 target_link_libraries(dist-evd-solver-lib
     PUBLIC
@@ -67,18 +78,42 @@ target_link_libraries(dist-evd-solver-lib
         NVHPC::CUBLAS
         NVHPC::CUSOLVER
         NVHPC::CURAND
+        NVHPC::NCCL
         fmt::fmt
+        OpenMP::OpenMP_CXX
+        MPI::MPI_CXX
         argh
 )
 
+target_link_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
 
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver
     src/main.cu
+    src/workflow/workflow_tsqr.cu
     src/workflow/workflow_sy2sb.cu
+    src/workflow/workflow_sy2sb_dist.cu
 )
 
+target_link_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver PRIVATE "-Xcompiler=-fopenmp")
+
 target_link_libraries(dist-evd-solver
+    PRIVATE
+        dist-evd-solver-lib
+)
+
+# --- MPI 可执行文件定义 ---
+add_executable(dist-evd-solver-mpi
+    src/main-mpi.cu
+    src/workflow/workflow_sy2sb_mpi.cu
+)
+
+target_link_options(dist-evd-solver-mpi PRIVATE "-Xcompiler=-fopenmp")
+target_compile_options(dist-evd-solver-mpi PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
+
+target_link_libraries(dist-evd-solver-mpi
     PRIVATE
         dist-evd-solver-lib
 )

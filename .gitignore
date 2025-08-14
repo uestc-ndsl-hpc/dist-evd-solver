@@ -1,10 +1,7 @@
-.cache
-build
-fmt
-argh
-ref
-*.sbatch
-log
+.claude
 .cursor
 .sbatch
-build_release
+.cache
+build
+doc
+log

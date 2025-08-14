@@ -102,4 +102,51 @@ target_link_libraries(sy2sb_WY_construction_test
 
 target_include_directories(sy2sb_WY_construction_test PRIVATE ${CMAKE_SOURCE_DIR}/src/matrix_ops/internal/sy2sb)
 
-add_test(NAME sy2sb_WY_construction_test COMMAND sy2sb_WY_construction_test)
+add_executable(gpu_handle_wrappers_test gpu_handle_wrappers_test.cu)
+
+target_link_libraries(gpu_handle_wrappers_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+)
+
+add_test(NAME gpu_handle_wrappers_test COMMAND gpu_handle_wrappers_test)
+
+add_executable(gpu_aware_test env/gpu_aware.cu)
+
+target_link_libraries(gpu_aware_test PRIVATE NVHPC::CUDART)
+
+add_executable(single_gpu_sy2sb
+    env/single_gpu_sy2sb.cu
+    ${CMAKE_SOURCE_DIR}/src/workflow/workflow_sy2sb.cu
+)
+
+target_link_libraries(single_gpu_sy2sb
+    PRIVATE
+        dist-evd-solver-lib
+)
+
+add_executable(multi_gpu_cublasxt
+    env/multi_gpu_cublasxt.cu
+)
+
+target_link_libraries(multi_gpu_cublasxt
+    PRIVATE
+        dist-evd-solver-lib
+)
+
+add_executable(nccl_gpu_gemm env/nccl_gpu_gemm.cu)
+
+target_link_libraries(nccl_gpu_gemm
+    PRIVATE
+        dist-evd-solver-lib
+        NVHPC::NCCL
+)
+
+find_package(OpenMP REQUIRED)
+
+if(OpenMP_FOUND)
+    target_compile_options(nccl_gpu_gemm PRIVATE "-Xcompiler=-fopenmp")
+    target_link_libraries(nccl_gpu_gemm PRIVATE OpenMP::OpenMP_CXX)
+endif()

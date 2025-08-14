@@ -45,3 +45,27 @@ TEST_F(MatrixPrintTest, SequenceMatrixPrintDouble) {
     EXPECT_NO_THROW(
         matrix_ops::print(d_vec, m, n, "SequenceMatrixPrintDouble"));
 }
+
+TEST_F(MatrixPrintTest, SequenceHostMatrixPrintFloat) {
+    // 使用thrust创建设备向量
+    thrust::device_vector<float> d_vec(m * n);
+    thrust::sequence(d_vec.begin(), d_vec.end());
+
+    auto h_vec = thrust::host_vector<float>(d_vec.begin(), d_vec.end());
+
+    // 打印矩阵
+    EXPECT_NO_THROW(
+        matrix_ops::print(h_vec.data(), m, n, "SequenceHostMatrixPrintFloat"));
+}
+
+TEST_F(MatrixPrintTest, SequenceHostMatrixPrintDouble) {
+    // 使用thrust创建设备向量
+    thrust::device_vector<double> d_vec(m * n);
+    thrust::sequence(d_vec.begin(), d_vec.end());
+
+    auto h_vec = thrust::host_vector<double>(d_vec.begin(), d_vec.end());
+
+    // 打印矩阵
+    EXPECT_NO_THROW(
+        matrix_ops::print(h_vec.data(), m, n, "SequenceHostMatrixPrintDouble"));
+}
