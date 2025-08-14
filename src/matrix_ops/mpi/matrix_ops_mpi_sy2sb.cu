@@ -64,13 +64,17 @@ Sy2sbResultBuffers<T> MpiSy2sbContext<T>::release_sy2sb_buffers() {
                                  ldy,
                                  nb,
                                  b,
+                                 std::move(cublas_handle),
+                                 std::move(cusolver_handle),
+                                 stream,
                                  nccl_comm,
                                  std::move(sub_comm_groups),
                                  std::move(sub_mpi_comms)};
-    // 将所有通信器置空，避免析构函数重复释放
+    // 将所有通信器和流置空，避免析构函数重复释放
     nccl_comm = nullptr;
     sub_comm_groups.clear();
     sub_mpi_comms.clear();
+    stream = nullptr;
     return result;
 }
 
@@ -118,9 +122,6 @@ void MpiSy2sbContext<T>::initCommunication() {
     // 收集所有进程的本地 GPU ID
     MPI_Allgather(&mpi_config.local_gpu_id, 1, MPI_INT, all_gpu_ids.data(), 1,
                   MPI_INT, MPI_COMM_WORLD);
-
-    // 创建层次化通信组：[0,1,2,3] -> [1,2,3] -> [2,3] -> [3]
-    // 这样设计可以让早完成的进程开始下一轮计算，实现流水线并行
 
     // 1. 主通信组：所有进程 [0,1,2,3,...,size-1]
     ncclUniqueId main_nccl_id;

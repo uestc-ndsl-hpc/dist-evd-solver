@@ -87,7 +87,7 @@ target_link_libraries(dist-evd-solver-lib
 )
 
 target_link_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
-target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
+target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" "--extended-lambda" ${MPI_CXX_COMPILE_FLAGS})
 
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver

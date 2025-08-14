@@ -14,7 +14,7 @@ namespace mpi {
 // MpiSb2syGenQContext 类方法实现
 template <typename T>
 MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
-                                             Sy2sbResultBuffers<T>& buffers)
+                                            Sy2sbResultBuffers<T>& buffers)
     : mpi_config(config),
       n(buffers.n),
       lda(buffers.lda),
@@ -22,42 +22,82 @@ MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
       ldy(buffers.ldy),
       nb(buffers.nb),
       b(buffers.b),
+      cublas_handle(std::move(buffers.cublas_handle)),
+      cusolver_handle(std::move(buffers.cusolver_handle)),
+      stream(buffers.stream),
       gpu_W(std::move(buffers.W)),
       gpu_Y(std::move(buffers.Y)),
       nccl_comm(buffers.nccl_comm),
       sub_comm_groups(std::move(buffers.sub_comm_groups)),
       sub_mpi_comms(std::move(buffers.sub_mpi_comms)) {
-    
     // 计算分块信息
     cols_per_process = n / mpi_config.size;
     start_col = mpi_config.rank * cols_per_process;
     local_matrix_size = cols_per_process * n;
     
+    // Initialize q_cols vector with proper size
+    q_cols.resize(mpi_config.size);
+    std::fill(q_cols.begin(), q_cols.end(), cols_per_process);
+
     // 设置 NCCL 数据类型
     if constexpr (std::is_same_v<T, float>) {
         nccl_type = ncclFloat32;
     } else if constexpr (std::is_same_v<T, double>) {
         nccl_type = ncclFloat64;
     }
-    
+
     // 设置当前进程使用的 GPU
     cudaSetDevice(mpi_config.local_gpu_id);
+
+    gpu_work.resize(local_matrix_size);
+
+    // 这里可以考虑一下设计, 方便负载均衡
+    gpu_Q.resize(q_cols[mpi_config.rank] * n);
+    gpu_W_rec.resize(local_matrix_size);
+    gpu_Y_rec.resize(local_matrix_size);
     
-    // 分配工作空间
-    gpu_work.resize(2 * n * nb);
-    thrust::fill(gpu_work.begin(), gpu_work.end(), T(0));
-    
-    // 清空原始缓冲区的通信器引用，避免重复释放
+    // Initialize Q matrix as identity matrix
+    initializeQMatrix();
+
+    // 清空原始缓冲区的引用，避免重复释放
     buffers.nccl_comm = nullptr;
     buffers.sub_comm_groups.clear();
     buffers.sub_mpi_comms.clear();
+    buffers.stream = nullptr;
+}
+
+template <typename T>
+void MpiSb2syGenQContext<T>::initializeQMatrix() {
+    // Pre-calculate base offset for current process
+    size_t base_offset = 0;
+    for (int i = 0; i < mpi_config.rank; i++) {
+        base_offset += q_cols[i];
+    }
+    
+    // Copy member variables to local variables for device lambda
+    auto local_n = n;
+    auto local_base_offset = base_offset;
+    auto gpu_Q_ptr = thrust::raw_pointer_cast(gpu_Q.data());
+    
+    thrust::for_each(
+        thrust::make_counting_iterator<size_t>(0),
+        thrust::make_counting_iterator<size_t>(q_cols[mpi_config.rank] * n),
+        [=] __device__ (size_t idx) {
+            auto row = idx % local_n;
+            auto col = idx / local_n;
+            if (local_base_offset + col == row) {
+                gpu_Q_ptr[idx] = static_cast<T>(1.0);
+            } else {
+                gpu_Q_ptr[idx] = static_cast<T>(0.0);
+            }
+        });
 }
 
 template <typename T>
 MpiSb2syGenQContext<T>::~MpiSb2syGenQContext() {
     // 确保所有CUDA操作完成
     cudaDeviceSynchronize();
-    
+
     // 销毁所有子 NCCL 通信器
     for (size_t i = 0; i < sub_comm_groups.size(); i++) {
         if (sub_comm_groups[i] != nullptr) {
@@ -66,13 +106,13 @@ MpiSb2syGenQContext<T>::~MpiSb2syGenQContext() {
         }
     }
     sub_comm_groups.clear();
-    
+
     // 销毁主 NCCL 通信器
     if (nccl_comm != nullptr) {
         ncclCommDestroy(nccl_comm);
         nccl_comm = nullptr;
     }
-    
+
     // 销毁所有子 MPI 通信器
     if (!sub_mpi_comms.empty()) {
         for (int start_rank = 0;
@@ -93,11 +133,71 @@ MpiSb2syGenQContext<T>::~MpiSb2syGenQContext() {
         }
         sub_mpi_comms.clear();
     }
+
+    // 销毁 CUDA 流
+    if (stream != nullptr) {
+        cudaStreamDestroy(stream);
+        stream = nullptr;
+    }
 }
 
 template <typename T>
-void sy2sbGenQ(MpiSb2syGenQContext<T>& context) {
-    util::MpiLogger::println("(还)原(SBR)神启动");
+void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
+    util::MpiLogger::println("开始计算");
+
+    auto W = ctx.gpu_W.data();
+    auto Y = ctx.gpu_Y.data();
+
+    // auto W = ctx.gpu_W.data() + ctx.mpi_config.rank * ctx.cols_per_process;
+    // auto Y = ctx.gpu_Y.data() + ctx.mpi_config.rank * ctx.cols_per_process;
+    auto work = ctx.gpu_work.data();
+    // auto m = ctx.n - ctx.mpi_config.rank * ctx.cols_per_process;
+    auto m = ctx.n;
+    auto b = ctx.b;
+    auto ldW = ctx.ldw;
+    auto ldY = ctx.ldy;
+
+    auto nk = ctx.cols_per_process;
+
+    // Extract type-dependent constants
+    T done, dzero, dnegone;
+    cudaDataType_t cuda_type;
+    cublasComputeType_t compute_type;
+
+    if constexpr (std::is_same_v<T, float>) {
+        done = 1.0f;
+        dzero = 0.0f;
+        dnegone = -1.0f;
+        cuda_type = CUDA_R_32F;
+        compute_type = CUBLAS_COMPUTE_32F;
+    } else {
+        done = 1.0;
+        dzero = 0.0;
+        dnegone = -1.0;
+        cuda_type = CUDA_R_64F;
+        compute_type = CUBLAS_COMPUTE_64F;
+    }
+
+    for (auto col_wk = b; col_wk < nk; col_wk *= 2) {
+        cublasGemmStridedBatchedEx(
+            ctx.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, col_wk, col_wk, m - b,
+            &done, Y.get() + b, cuda_type, ldY, 2 * col_wk * ldY,
+            W.get() + b + col_wk * ldW, cuda_type, ldW, 2 * col_wk * ldW,
+            &dzero, work.get(), cuda_type, m, 2 * col_wk * m, nk / (2 * col_wk),
+            compute_type, CUBLAS_GEMM_DEFAULT);
+
+        cublasGemmStridedBatchedEx(
+            ctx.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m - b, col_wk, col_wk,
+            &dnegone, W.get() + b, cuda_type, ldW, 2 * col_wk * ldW, work.get(),
+            cuda_type, m, 2 * col_wk * m, &done, W.get() + b + col_wk * ldW,
+            cuda_type, ldW, 2 * col_wk * ldW, nk / (2 * col_wk), compute_type,
+            CUBLAS_GEMM_DEFAULT);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // I - WY 左乘, 是一个依次的发送到乘的故事
+
     return;
 }
 
@@ -107,10 +207,10 @@ void sy2sbGenQ(MpiSb2syGenQContext<T>& context) {
 template class matrix_ops::mpi::MpiSb2syGenQContext<float>;
 template class matrix_ops::mpi::MpiSb2syGenQContext<double>;
 
-template void matrix_ops::mpi::sy2sbGenQ<float>(
+template void matrix_ops::mpi::sb2syGenQ<float>(
     matrix_ops::mpi::MpiSb2syGenQContext<float>& context);
 
-template void matrix_ops::mpi::sy2sbGenQ<double>(
+template void matrix_ops::mpi::sb2syGenQ<double>(
     matrix_ops::mpi::MpiSb2syGenQContext<double>& context);
 
 }  // namespace matrix_ops
