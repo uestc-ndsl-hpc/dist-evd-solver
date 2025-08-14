@@ -150,3 +150,17 @@ if(OpenMP_FOUND)
     target_compile_options(nccl_gpu_gemm PRIVATE "-Xcompiler=-fopenmp")
     target_link_libraries(nccl_gpu_gemm PRIVATE OpenMP::OpenMP_CXX)
 endif()
+
+# MPI Sb2sy GenQ Context Test
+add_executable(mpi_sb2sy_genq_context_test mpi_sb2sy_genq_context_test.cu)
+
+target_link_libraries(mpi_sb2sy_genq_context_test
+    PRIVATE
+        dist-evd-solver-lib
+        GTest::gtest
+        GTest::gtest_main
+        MPI::MPI_CXX
+        NVHPC::NCCL
+)
+
+add_test(NAME mpi_sb2sy_genq_context_test COMMAND mpirun -np 1 mpi_sb2sy_genq_context_test)
