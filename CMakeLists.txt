@@ -58,6 +58,7 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
     src/matrix_ops/dist/matrix_ops_dist_sy2sb.cu
     src/matrix_ops/mpi/matrix_ops_mpi_sy2sb.cu
+    src/matrix_ops/mpi/matrix_ops_mpi_sb2sy.cu
 )
 
 target_include_directories(dist-evd-solver-lib
@@ -86,7 +87,7 @@ target_link_libraries(dist-evd-solver-lib
 )
 
 target_link_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp")
-target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" ${MPI_CXX_COMPILE_FLAGS})
+target_compile_options(dist-evd-solver-lib PRIVATE "-Xcompiler=-fopenmp" "--extended-lambda" ${MPI_CXX_COMPILE_FLAGS})
 
 # --- 可执行文件定义 ---
 add_executable(dist-evd-solver
@@ -108,6 +109,7 @@ target_link_libraries(dist-evd-solver
 add_executable(dist-evd-solver-mpi
     src/main-mpi.cu
     src/workflow/workflow_sy2sb_mpi.cu
+    src/workflow/workflow_sb2sy_mpi.cu
 )
 
 target_link_options(dist-evd-solver-mpi PRIVATE "-Xcompiler=-fopenmp")

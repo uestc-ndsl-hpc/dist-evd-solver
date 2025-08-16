@@ -21,6 +21,12 @@ struct MpiConfig {
     int total_gpus;
 
     MpiConfig(int r, int s, int local_gpu, int total);
+
+    MpiConfig(const MpiConfig& mpi_config)
+        : rank(mpi_config.rank),
+          size(mpi_config.size),
+          local_gpu_id(mpi_config.local_gpu_id),
+          total_gpus(mpi_config.total_gpus) {}
 };
 
 /**
@@ -38,6 +44,10 @@ struct Sy2sbResultBuffers {
     size_t n;
     size_t lda, ldw, ldy;
     size_t nb, b;
+    // GPU 资源句柄
+    common::CublasHandle cublas_handle;
+    common::CusolverDnHandle cusolver_handle;
+    cudaStream_t stream;
     // 通信器组
     ncclComm_t nccl_comm;                     // 主通信器
     std::vector<ncclComm_t> sub_comm_groups;  // 层次化子通信组
@@ -114,6 +124,51 @@ class MpiSy2sbContext {
     void cleanup();
 };
 
+template <typename T>
+class MpiSb2syGenQContext {
+   public:
+    // MPI 配置
+    MpiConfig mpi_config;
+
+    // 算法参数
+    size_t n;
+    size_t lda, ldw, ldy;
+    size_t nb, b;
+
+    // 分块信息
+    size_t cols_per_process;
+    size_t start_col;
+    size_t local_matrix_size;
+    ncclDataType_t nccl_type;
+    std::vector<size_t> q_cols;
+
+    // GPU 资源 (每个进程一个 GPU)
+    common::CublasHandle cublas_handle;
+    common::CusolverDnHandle cusolver_handle;
+    cudaStream_t stream;
+
+    // GPU 显存信息
+    thrust::device_vector<T> gpu_W;
+    thrust::device_vector<T> gpu_Y;
+    thrust::device_vector<T> gpu_work;
+    thrust::device_vector<T> gpu_Q;
+
+    thrust::device_vector<T> gpu_W_rec;
+    thrust::device_vector<T> gpu_Y_rec;
+
+    // NCCL 通信器
+    ncclComm_t nccl_comm;
+    std::vector<ncclComm_t> sub_comm_groups;  // 层次化子通信组
+    std::vector<MPI_Comm> sub_mpi_comms;      // 对应的MPI子通信器
+
+    MpiSb2syGenQContext(const MpiConfig& config,
+                        Sy2sbResultBuffers<T>& buffers);
+
+    ~MpiSb2syGenQContext();
+
+    void initializeQMatrix();
+};
+
 namespace internal {
 // 内部函数声明
 template <typename T>
@@ -133,6 +188,12 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
  */
 template <typename T>
 void sy2sb(MpiSy2sbContext<T>& ctx);
+
+/**
+ * @brief MPI 版本的 sb2sy GenQ 主函数
+ */
+template <typename T>
+void sb2syGenQ(MpiSb2syGenQContext<T>& context);
 
 }  // namespace mpi
 }  // namespace matrix_ops
