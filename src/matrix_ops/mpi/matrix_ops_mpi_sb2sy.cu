@@ -4,6 +4,7 @@
 #include <thrust/host_vector.h>
 
 #include <cstddef>
+#include <exception>
 
 #include "log.h"
 #include "matrix_ops.cuh"
@@ -144,8 +145,6 @@ MpiSb2syGenQContext<T>::~MpiSb2syGenQContext() {
 
 template <typename T>
 void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
-    util::MpiLogger::println("开始计算");
-
     auto W = ctx.gpu_W.data() + ctx.mpi_config.rank * ctx.cols_per_process;
     auto Y = ctx.gpu_Y.data() + ctx.mpi_config.rank * ctx.cols_per_process;
     auto work = ctx.gpu_work.data();
@@ -193,9 +192,9 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事
+    // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事 就是 Q - W (YTQ)
     for (auto i = 0; i < ctx.mpi_config.size; ++i) {
-        auto wy_gpu_id = ctx.mpi_config.local_gpu_id - 1 - i;
+        auto wy_gpu_id = ctx.mpi_config.size - 1 - i;
         if (wy_gpu_id == ctx.mpi_config.local_gpu_id) {
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
@@ -204,37 +203,57 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                                     thrust::device_ptr<T>, T>(
                 W, ctx.ldw, ctx.gpu_W_rec.data(), m, m, ctx.cols_per_process);
         }
-        ncclBcast(ctx.gpu_Y_rec.data().get(), ctx.n, ctx.nccl_type, wy_gpu_id,
-                  ctx.nccl_comm, ctx.stream);
-        ncclBcast(ctx.gpu_W_rec.data().get(), ctx.n, ctx.nccl_type, wy_gpu_id,
-                  ctx.nccl_comm, ctx.stream);
+        // 计算发送方进程的 m 值，确保所有进程使用相同的广播数据量
+        auto sender_m = ctx.n - wy_gpu_id * ctx.cols_per_process;
+        ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
+                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
         cudaStreamSynchronize(ctx.stream);
 
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(
-            ctx.gpu_Y_rec.data(), m,
-            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
-            ctx.n, m, ctx.cols_per_process);
-
-        matrix_ops::gemm(
-            ctx.cublas_handle, ctx.cols_per_process,
-            ctx.q_cols[ctx.mpi_config.local_gpu_id], ctx.n, T(1.0),
-            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
-            ctx.n, true, ctx.gpu_Q.data(), ctx.n, false, T(0.0),
-            ctx.gpu_Y_rec.data(), ctx.n);
+        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
+                     static_cast<T>(0.0));
 
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(
-            ctx.gpu_W_rec.data(), m,
-            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
-            ctx.n, m, ctx.cols_per_process);
+            ctx.gpu_Y_rec.data(), sender_m,
+            ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
+            sender_m, ctx.cols_per_process);
 
-        matrix_ops::gemm(
-            ctx.cublas_handle, ctx.n, ctx.cols_per_process,
-            ctx.q_cols[ctx.cols_per_process], T(-1.0), ctx.gpu_W_rec.data(),
-            ctx.n,
-            ctx.gpu_work.data() + ctx.mpi_config.rank * ctx.cols_per_process,
-            ctx.n, T(1.0), ctx.gpu_Q.data(), ctx.n);
+        try {
+            matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
+                             ctx.q_cols[ctx.mpi_config.rank], ctx.n, T(1.0),
+                             ctx.gpu_work.data(), ctx.n, true, ctx.gpu_Q.data(),
+                             ctx.n, false, T(0.0), ctx.gpu_Y_rec.data(), ctx.n);
+        } catch (std::exception& e) {
+            throw std::runtime_error(
+                fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 YTQ 矩阵 {}",
+                            wy_gpu_id, e.what()));
+        }
+
+        ncclBcast(ctx.gpu_W_rec.data().get(), sender_m * ctx.cols_per_process,
+                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
+
+        cudaStreamSynchronize(ctx.stream);
+
+        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
+                     static_cast<T>(0.0));
+
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(
+            ctx.gpu_W_rec.data(), sender_m,
+            ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
+            sender_m, ctx.cols_per_process);
+
+        try {
+            matrix_ops::gemm(ctx.cublas_handle, ctx.n, ctx.cols_per_process,
+                             ctx.q_cols[ctx.mpi_config.rank], T(-1.0),
+                             ctx.gpu_work.data(), ctx.n, false,
+                             ctx.gpu_Y_rec.data(), ctx.n, false, T(1.0),
+                             ctx.gpu_Q.data(), ctx.n);
+        } catch (std::exception& e) {
+            throw std::runtime_error(
+                fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 WYTQ 矩阵 {}",
+                            wy_gpu_id, e.what()));
+        }
     }
 
     return;

@@ -2,6 +2,8 @@
 .cursor
 .sbatch
 .cache
+.conda
+.vscode
 build
 doc
 log

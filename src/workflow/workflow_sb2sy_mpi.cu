@@ -177,6 +177,8 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     matrix_ops::mpi::Sy2sbResultBuffers<T> sy2sb_result_buffers;
 
+    util::MpiLogger::tic("SBR+SBR Back");
+
     // 使用额外的作用域确保上下文在 MPI_Finalize() 之前析构
     {
         // 创建 MPI sy2sb 上下文
@@ -185,6 +187,8 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             mpi_config, n, A_h.data(), n, W_h.data(), n, Y_h.data(), n, nb, b);
         util::MpiLogger::toc("sy2sb_mpi_context_creation");
 
+        MPI_Barrier(MPI_COMM_WORLD);
+
         // 执行 MPI sy2sb 算法
         util::MpiLogger::tic("sy2sb_mpi_computation");
         matrix_ops::mpi::sy2sb<T>(sy2sb_context);
@@ -192,34 +196,6 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
         // 保留 A, W, Y 缓冲区，释放其他所有资源
         sy2sb_result_buffers = std::move(sy2sb_context.release_sy2sb_buffers());
-    }
-
-    if (debug) {
-        // 计算每个进程的数据大小
-        size_t cols_per_process = n / size;
-        size_t local_data_size = cols_per_process * n;
-
-        auto B_h_print = thrust::host_vector<T>(n * n);
-        auto B_h_partial = thrust::host_vector<T>(sy2sb_result_buffers.A);
-
-        // 将大家的部分 A 数据收集到 rank 0
-        MPI_Gather(B_h_partial.data(), local_data_size,
-                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE,
-                   B_h_print.data(), local_data_size,
-                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
-                   MPI_COMM_WORLD);
-
-        auto B_d = thrust::device_vector<T>(B_h_print);
-        thrust::for_each(thrust::make_counting_iterator<size_t>(0),
-                         thrust::make_counting_iterator<size_t>(n * n),
-                         make_symmetric_functor<T>(B_d.data(), n, n));
-
-        // 只在 rank 0 打印收集到的矩阵
-        if (rank == 0) {
-            matrix_ops::print(B_d.data(), n, n,
-                              fmt::format("Collected A matrix after sy2sb"));
-        }
-        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     {
@@ -240,28 +216,15 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
                     matrix_ops::print(
                         sb2sy_genQ_context.gpu_Q, n,
                         sb2sy_genQ_context.q_cols[rank],
-                        fmt::format("[rank:{}] Q matrix before sb2sy GenQ",
+                        fmt::format("[rank:{}] Q matrix after sb2sy GenQ",
                                     rank));
                 }
                 MPI_Barrier(MPI_COMM_WORLD);
             }
         }
-
-        // 调试打印 sb2sy 结果
-        if (debug) {
-            for (auto i = 0; i < mpi_config.size; ++i) {
-                if (i == rank) {
-                    matrix_ops::print(
-                        sb2sy_genQ_context.gpu_W, n, n / mpi_config.size,
-                        fmt::format("[rank:{}] W matrix after sb2sy", rank));
-                    matrix_ops::print(
-                        sb2sy_genQ_context.gpu_Y, n, n / mpi_config.size,
-                        fmt::format("[rank:{}] Y matrix after sb2sy", rank));
-                }
-                MPI_Barrier(MPI_COMM_WORLD);
-            }
-        }
     }
+
+    util::MpiLogger::toc("SBR+SBR Back");
 
     // 在上下文析构之后再调用 MPI_Finalize
     MPI_Finalize();
