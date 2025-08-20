@@ -196,6 +196,34 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         sy2sb_result_buffers = std::move(sy2sb_context.release_sy2sb_buffers());
     }
 
+    if (debug) {
+        // 计算每个进程的数据大小
+        size_t cols_per_process = n / size;
+        size_t local_data_size = cols_per_process * n;
+
+        auto B_h_print = thrust::host_vector<T>(n * n);
+        auto B_h_partial = thrust::host_vector<T>(sy2sb_result_buffers.A);
+
+        // 将大家的部分 A 数据收集到 rank 0
+        MPI_Gather(B_h_partial.data(), local_data_size,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE,
+                   B_h_print.data(), local_data_size,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
+                   MPI_COMM_WORLD);
+
+        auto B_d = thrust::device_vector<T>(B_h_print);
+        thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                         thrust::make_counting_iterator<size_t>(n * n),
+                         make_symmetric_functor<T>(B_d.data(), n, n));
+
+        // 只在 rank 0 打印收集到的矩阵
+        if (rank == 0) {
+            matrix_ops::print(B_d.data(), n, n,
+                              fmt::format("Collected A matrix after sy2sb"));
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
     {
         // 创建 MPI sb2sy GenQ 上下文
         util::MpiLogger::tic("sb2sy_genQ_mpi_context_creation");
