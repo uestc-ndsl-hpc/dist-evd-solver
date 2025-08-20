@@ -229,19 +229,184 @@ void MpiSy2sbContext<T>::allocateGpuMemory() {
 
 template <typename T>
 void MpiSy2sbContext<T>::copyHostToGpu() {
-    try {
-        // 按列复制 A 矩阵的本地部分
-        // 对于列主序存储，我们需要复制连续的列块
-        thrust::copy(A_host + start_col * n,
-                     A_host + start_col * n + local_matrix_size, gpu_A.begin());
+    // 仅 rank 0 需要 A_host 非空；其它 rank 可以传 nullptr
+    MPI_Datatype mpi_t = std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE;
 
-        // 同时复制到 oriA 作为原始矩阵的备份
-        thrust::copy(A_host + start_col * n,
-                     A_host + start_col * n + local_matrix_size,
-                     gpu_oriA.begin());
-    } catch (const std::exception& e) {
-        throw std::runtime_error(
-            fmt::format("Failed to copy host data to GPU: {}", e.what()));
+    // 以 INT_MAX 为上限进行分块，避免派生类型的 int 形参溢出
+    const size_t INT_MAX_SZ =
+        static_cast<size_t>(std::numeric_limits<int>::max());
+    const bool small_enough =
+        n <= INT_MAX_SZ && cols_per_process <= INT_MAX_SZ &&
+        lda <= INT_MAX_SZ && local_matrix_size <= INT_MAX_SZ;
+
+    if (mpi_config.rank == 0) {
+        if (A_host == nullptr) {
+            throw std::runtime_error("rank 0 requires valid A_host");
+        }
+
+        // 1) rank0：拷贝自己的列块（尊重列主序与 lda）
+        {
+            T* src_base =
+                A_host + static_cast<size_t>(start_col) * lda;  // start_col==0
+            size_t src_pitch = lda * sizeof(T);
+            size_t dst_pitch = n * sizeof(T);
+            size_t width_bytes = n * sizeof(T);
+            size_t height_cols = cols_per_process;
+
+            cudaError_t err = cudaMemcpy2DAsync(
+                /*dst*/ gpu_A.data().get(), /*dpitch*/ dst_pitch,
+                /*src*/ src_base, /*spitch*/ src_pitch,
+                /*width*/ width_bytes, /*height*/ height_cols,
+                cudaMemcpyHostToDevice, stream);
+            if (err != cudaSuccess) {
+                throw std::runtime_error(fmt::format(
+                    "cudaMemcpy2DAsync rank0 local block failed: {}",
+                    cudaGetErrorString(err)));
+            }
+        }
+
+        if (small_enough) {
+            // 2a) 小尺寸：一次性用 vector 类型发送给其它进程
+            std::vector<MPI_Request> reqs;
+            reqs.reserve(static_cast<size_t>(std::max(0, mpi_config.size - 1)));
+
+            MPI_Datatype col_block_type;
+            MPI_Type_vector(static_cast<int>(cols_per_process),
+                            static_cast<int>(n), static_cast<int>(lda), mpi_t,
+                            &col_block_type);
+            MPI_Type_commit(&col_block_type);
+
+            for (int r = 1; r < mpi_config.size; ++r) {
+                size_t r_start_col = static_cast<size_t>(r) * cols_per_process;
+                const T* send_base = A_host + r_start_col * lda;
+
+                MPI_Request req{};
+                MPI_Isend(send_base, 1, col_block_type, r, /*tag*/ 100,
+                          MPI_COMM_WORLD, &req);
+                reqs.push_back(req);
+            }
+
+            if (!reqs.empty()) {
+                MPI_Waitall(static_cast<int>(reqs.size()), reqs.data(),
+                            MPI_STATUSES_IGNORE);
+            }
+            MPI_Type_free(&col_block_type);
+        } else {
+            // 2b) 大尺寸：分块(row_chunk × col_chunk)发送，确保每个 vector
+            // 形参不溢出
+            for (int r = 1; r < mpi_config.size; ++r) {
+                const size_t r_start_col =
+                    static_cast<size_t>(r) * cols_per_process;
+
+                for (size_t row_off = 0; row_off < n; row_off += INT_MAX_SZ) {
+                    const size_t tile_rows = std::min(n - row_off, INT_MAX_SZ);
+                    const int i_tile_rows = static_cast<int>(tile_rows);
+
+                    for (size_t col_off = 0; col_off < cols_per_process;
+                         col_off += INT_MAX_SZ) {
+                        const size_t tile_cols =
+                            std::min(cols_per_process - col_off, INT_MAX_SZ);
+                        const int i_tile_cols = static_cast<int>(tile_cols);
+
+                        // 构造源端派生类型：count=tile_cols,
+                        // blocklength=tile_rows, stride=lda
+                        MPI_Datatype tile_type;
+                        MPI_Type_vector(i_tile_cols, i_tile_rows,
+                                        static_cast<int>(lda), mpi_t,
+                                        &tile_type);
+                        MPI_Type_commit(&tile_type);
+
+                        const T* send_ptr = A_host + r_start_col * lda +
+                                            row_off + col_off * lda;
+
+                        // 同一 tag 按固定顺序发送，接收端按相同顺序接收
+                        MPI_Send(send_ptr, 1, tile_type, r, /*tag*/ 100,
+                                 MPI_COMM_WORLD);
+
+                        MPI_Type_free(&tile_type);
+                    }
+                }
+            }
+        }
+
+        // 3) rank0：设备侧备份 A->oriA
+        cudaError_t err = cudaMemcpyAsync(
+            gpu_oriA.data().get(), gpu_A.data().get(),
+            local_matrix_size * sizeof(T), cudaMemcpyDeviceToDevice, stream);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(
+                fmt::format("cudaMemcpyAsync(gpu_A->gpu_oriA) rank0 failed: {}",
+                            cudaGetErrorString(err)));
+        }
+        err = cudaStreamSynchronize(stream);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(
+                fmt::format("cudaStreamSynchronize rank0 failed: {}",
+                            cudaGetErrorString(err)));
+        }
+    } else {
+        // 非 root：接收到紧凑列主序缓冲 (ld = n)
+        std::vector<T> host_recv(local_matrix_size);
+
+        if (small_enough) {
+            // 2a) 小尺寸：一次性接收连续缓冲
+            MPI_Recv(
+                host_recv.data(), static_cast<int>(local_matrix_size), mpi_t,
+                /*source*/ 0, /*tag*/ 100, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        } else {
+            // 2b) 大尺寸：按相同分块顺序接收到 host_recv 中对应偏移
+            for (size_t row_off = 0; row_off < n; row_off += INT_MAX_SZ) {
+                const size_t tile_rows = std::min(n - row_off, INT_MAX_SZ);
+                const int i_tile_rows = static_cast<int>(tile_rows);
+
+                for (size_t col_off = 0; col_off < cols_per_process;
+                     col_off += INT_MAX_SZ) {
+                    const size_t tile_cols =
+                        std::min(cols_per_process - col_off, INT_MAX_SZ);
+                    const int i_tile_cols = static_cast<int>(tile_cols);
+
+                    // 目标缓冲区按列主序，ld = n，因此 stride = n
+                    MPI_Datatype tile_type;
+                    MPI_Type_vector(i_tile_cols, i_tile_rows,
+                                    static_cast<int>(n), mpi_t, &tile_type);
+                    MPI_Type_commit(&tile_type);
+
+                    T* recv_ptr = host_recv.data() + row_off + col_off * n;
+
+                    MPI_Recv(recv_ptr, 1, tile_type, /*source*/ 0, /*tag*/ 100,
+                             MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+                    MPI_Type_free(&tile_type);
+                }
+            }
+        }
+
+        // H2D（紧凑）
+        const size_t bytes = local_matrix_size * sizeof(T);
+        cudaError_t err =
+            cudaMemcpyAsync(gpu_A.data().get(), host_recv.data(), bytes,
+                            cudaMemcpyHostToDevice, stream);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(
+                fmt::format("cudaMemcpyAsync host->gpu_A rank {} failed: {}",
+                            mpi_config.rank, cudaGetErrorString(err)));
+        }
+
+        // 设备侧备份
+        err = cudaMemcpyAsync(gpu_oriA.data().get(), gpu_A.data().get(), bytes,
+                              cudaMemcpyDeviceToDevice, stream);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(fmt::format(
+                "cudaMemcpyAsync(gpu_A->gpu_oriA) rank {} failed: {}",
+                mpi_config.rank, cudaGetErrorString(err)));
+        }
+
+        err = cudaStreamSynchronize(stream);
+        if (err != cudaSuccess) {
+            throw std::runtime_error(
+                fmt::format("cudaStreamSynchronize rank {} failed: {}",
+                            mpi_config.rank, cudaGetErrorString(err)));
+        }
     }
 }
 
@@ -804,7 +969,8 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     }
 
     // 创建 MPI sy2sb 上下文
-    MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
+    MpiSy2sbContext<T> ctx(mpi_config, n, mpi_config.rank == 0 ? A : nullptr,
+                           lda, W, ldw, Y, ldy, nb, b);
 
     // 调用重载版本
     sy2sb(ctx);

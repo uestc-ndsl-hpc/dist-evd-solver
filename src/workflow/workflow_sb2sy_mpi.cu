@@ -144,19 +144,17 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     }
 
     // Generate initial matrix A (symmetric) on rank 0
-    auto A_h = thrust::host_vector<T>(n * n);
+    thrust::host_vector<T> A_h;
+    T* A_ptr = nullptr;
     if (rank == 0) {
         auto handle = common::CublasHandle();
+        A_h.resize(n * n);
         {
             auto A_d = matrix_ops::create_symmetric_random<T>(n, true);
             thrust::copy(A_d.begin(), A_d.end(), A_h.begin());
         }
+        A_ptr = thrust::raw_pointer_cast(A_h.data());
     }
-
-    // 广播矩阵数据到所有进程
-    MPI_Bcast(A_h.data(), n * n,
-              std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
-              MPI_COMM_WORLD);
 
     // debug 打印原始 A
     if (debug) {
@@ -168,8 +166,8 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     }
 
     // 创建工作数组
-    auto W_h = thrust::host_vector<T>(n * n, 0.0);
-    auto Y_h = thrust::host_vector<T>(n * n, 0.0);
+    T* W_ptr = nullptr;
+    T* Y_ptr = nullptr;
 
     // 创建 MPI 配置
     matrix_ops::mpi::MpiConfig mpi_config(rank, size, current_device,
@@ -184,7 +182,7 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         // 创建 MPI sy2sb 上下文
         util::MpiLogger::tic("sy2sb_mpi_context_creation");
         matrix_ops::mpi::MpiSy2sbContext<T> sy2sb_context(
-            mpi_config, n, A_h.data(), n, W_h.data(), n, Y_h.data(), n, nb, b);
+            mpi_config, n, A_ptr, n, W_ptr, n, Y_ptr, n, nb, b);
         util::MpiLogger::toc("sy2sb_mpi_context_creation");
 
         MPI_Barrier(MPI_COMM_WORLD);
@@ -196,6 +194,34 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
         // 保留 A, W, Y 缓冲区，释放其他所有资源
         sy2sb_result_buffers = std::move(sy2sb_context.release_sy2sb_buffers());
+    }
+
+    if (debug) {
+        // 计算每个进程的数据大小
+        size_t cols_per_process = n / size;
+        size_t local_data_size = cols_per_process * n;
+
+        auto B_h_print = thrust::host_vector<T>(n * n);
+        auto B_h_partial = thrust::host_vector<T>(sy2sb_result_buffers.A);
+
+        // 将大家的部分 A 数据收集到 rank 0
+        MPI_Gather(B_h_partial.data(), local_data_size,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE,
+                   B_h_print.data(), local_data_size,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
+                   MPI_COMM_WORLD);
+
+        auto B_d = thrust::device_vector<T>(B_h_print);
+        thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                         thrust::make_counting_iterator<size_t>(n * n),
+                         make_symmetric_functor<T>(B_d.data(), n, n));
+
+        // 只在 rank 0 打印收集到的矩阵
+        if (rank == 0) {
+            matrix_ops::print(B_d.data(), n, n,
+                              fmt::format("Collected A matrix after sy2sb"));
+        }
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     {
