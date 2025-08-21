@@ -196,6 +196,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
+    util::MpiLogger::tic("sb2syGenQT");
+
     // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事 就是 Q - W (YTQ)
     for (auto i = 0; i < ctx.mpi_config.size; ++i) {
         auto wy_gpu_id = i;
@@ -276,6 +278,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
     }
+
+    util::MpiLogger::toc("sb2syGenQT");
 
     return;
 }
