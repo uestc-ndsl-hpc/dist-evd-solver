@@ -224,6 +224,10 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
         util::MpiLogger::toc(w_message);
 
+        auto before_wq = fmt::format("before_wq {}'s WQ matrix", i);
+
+        util::MpiLogger::tic(before_wq);
+
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
 
@@ -232,6 +236,13 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             ctx.gpu_W_rec.data(), sender_m,
             ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
             sender_m, ctx.cols_per_process);
+
+        util::MpiLogger::toc(before_wq);
+
+        auto gemm_wq = fmt::format("gemm_wq {}'s WQT matrix and m,n,k is {},{},{}", i,
+                                    ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank], ctx.n);
+
+        util::MpiLogger::tic(gemm_wq);
 
         try {
             matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
@@ -243,6 +254,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                 fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 YTQ 矩阵 {}",
                             wy_gpu_id, e.what()));
         }
+
+        util::MpiLogger::toc(gemm_wq);
 
         auto y_message = fmt::format(
             "bcast_y {}'s Y matrix and communication is {} elements", i,
@@ -257,6 +270,10 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
         util::MpiLogger::toc(y_message);
 
+        auto before_ywq = fmt::format("before_ywq {}'s YWQ matrix", i);
+
+        util::MpiLogger::tic(before_ywq);
+
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
 
@@ -265,6 +282,13 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             ctx.gpu_Y_rec.data(), sender_m,
             ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
             sender_m, ctx.cols_per_process);
+
+        util::MpiLogger::toc(before_ywq);
+
+        auto gemm_ywq = fmt::format("gemm_ywq {}'s YWTQ matrix and m,n,k is {},{},{}", i,
+                                     ctx.n, ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank]);
+
+        util::MpiLogger::tic(gemm_ywq);
 
         try {
             matrix_ops::gemm(ctx.cublas_handle, ctx.n, ctx.cols_per_process,
@@ -277,6 +301,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                 fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 WYTQ 矩阵 {}",
                             wy_gpu_id, e.what()));
         }
+
+        util::MpiLogger::toc(gemm_ywq);
     }
 
     util::MpiLogger::toc("sb2syGenQT");
