@@ -209,9 +209,18 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         }
         // 计算发送方进程的 m 值，确保所有进程使用相同的广播数据量
         auto sender_m = ctx.n - wy_gpu_id * ctx.cols_per_process;
+
+        auto w_message = fmt::format(
+            "bcast_w {}'s W matrix and communication is {} elements", i,
+            sender_m * ctx.cols_per_process);
+
+        util::MpiLogger::tic(w_message);
+
         ncclBcast(ctx.gpu_W_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
         cudaStreamSynchronize(ctx.stream);
+
+        util::MpiLogger::toc(w_message);
 
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
@@ -233,10 +242,18 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
 
+        auto y_message = fmt::format(
+            "bcast_y {}'s Y matrix and communication is {} elements", i,
+            sender_m * ctx.cols_per_process);
+
+        util::MpiLogger::tic(y_message);
+
         ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
 
         cudaStreamSynchronize(ctx.stream);
+
+        util::MpiLogger::toc(y_message);
 
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
