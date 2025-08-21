@@ -160,6 +160,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
     cudaDataType_t cuda_type;
     cublasComputeType_t compute_type;
 
+    util::MpiLogger::tic("sb2syGenW");
+
     if constexpr (std::is_same_v<T, float>) {
         done = 1.0f;
         dzero = 0.0f;
@@ -190,11 +192,13 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             CUBLAS_GEMM_DEFAULT);
     }
 
+    util::MpiLogger::toc("sb2syGenW");
+
     MPI_Barrier(MPI_COMM_WORLD);
 
     // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事 就是 Q - W (YTQ)
     for (auto i = 0; i < ctx.mpi_config.size; ++i) {
-        auto wy_gpu_id = ctx.mpi_config.size - 1 - i;
+        auto wy_gpu_id = i;
         if (wy_gpu_id == ctx.mpi_config.local_gpu_id) {
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
@@ -205,33 +209,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         }
         // 计算发送方进程的 m 值，确保所有进程使用相同的广播数据量
         auto sender_m = ctx.n - wy_gpu_id * ctx.cols_per_process;
-        ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
-                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
-        cudaStreamSynchronize(ctx.stream);
-
-        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
-                     static_cast<T>(0.0));
-
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
-                                T>(
-            ctx.gpu_Y_rec.data(), sender_m,
-            ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
-            sender_m, ctx.cols_per_process);
-
-        try {
-            matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
-                             ctx.q_cols[ctx.mpi_config.rank], ctx.n, T(1.0),
-                             ctx.gpu_work.data(), ctx.n, true, ctx.gpu_Q.data(),
-                             ctx.n, false, T(0.0), ctx.gpu_Y_rec.data(), ctx.n);
-        } catch (std::exception& e) {
-            throw std::runtime_error(
-                fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 YTQ 矩阵 {}",
-                            wy_gpu_id, e.what()));
-        }
-
         ncclBcast(ctx.gpu_W_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
-
         cudaStreamSynchronize(ctx.stream);
 
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
@@ -244,10 +223,35 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             sender_m, ctx.cols_per_process);
 
         try {
+            matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
+                             ctx.q_cols[ctx.mpi_config.rank], ctx.n, T(1.0),
+                             ctx.gpu_work.data(), ctx.n, true, ctx.gpu_Q.data(),
+                             ctx.n, false, T(0.0), ctx.gpu_W_rec.data(), ctx.n);
+        } catch (std::exception& e) {
+            throw std::runtime_error(
+                fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 YTQ 矩阵 {}",
+                            wy_gpu_id, e.what()));
+        }
+
+        ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
+                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
+
+        cudaStreamSynchronize(ctx.stream);
+
+        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
+                     static_cast<T>(0.0));
+
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(
+            ctx.gpu_Y_rec.data(), sender_m,
+            ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
+            sender_m, ctx.cols_per_process);
+
+        try {
             matrix_ops::gemm(ctx.cublas_handle, ctx.n, ctx.cols_per_process,
                              ctx.q_cols[ctx.mpi_config.rank], T(-1.0),
                              ctx.gpu_work.data(), ctx.n, false,
-                             ctx.gpu_Y_rec.data(), ctx.n, false, T(1.0),
+                             ctx.gpu_W_rec.data(), ctx.n, false, T(1.0),
                              ctx.gpu_Q.data(), ctx.n);
         } catch (std::exception& e) {
             throw std::runtime_error(
