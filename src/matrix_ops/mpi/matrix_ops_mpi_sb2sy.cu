@@ -160,6 +160,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
     cudaDataType_t cuda_type;
     cublasComputeType_t compute_type;
 
+    util::MpiLogger::tic("sb2syGenW");
+
     if constexpr (std::is_same_v<T, float>) {
         done = 1.0f;
         dzero = 0.0f;
@@ -189,6 +191,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             cuda_type, ldW, 2 * col_wk * ldW, nk / (2 * col_wk), compute_type,
             CUBLAS_GEMM_DEFAULT);
     }
+
+    util::MpiLogger::toc("sb2syGenW");
 
     MPI_Barrier(MPI_COMM_WORLD);
 
