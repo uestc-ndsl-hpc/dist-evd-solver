@@ -212,17 +212,17 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         // 计算发送方进程的 m 值，确保所有进程使用相同的广播数据量
         auto sender_m = ctx.n - wy_gpu_id * ctx.cols_per_process;
 
-        auto w_message = fmt::format(
-            "bcast_w {}'s W matrix and communication is {} elements", i,
-            sender_m * ctx.cols_per_process);
+        // auto w_message = fmt::format(
+        //     "bcast_w {}'s W matrix and communication is {} elements", i,
+        //     sender_m * ctx.cols_per_process);
 
-        util::MpiLogger::tic(w_message);
+        // util::MpiLogger::tic(w_message);
 
         ncclBcast(ctx.gpu_W_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
         cudaStreamSynchronize(ctx.stream);
 
-        util::MpiLogger::toc(w_message);
+        // util::MpiLogger::toc(w_message);
 
         auto before_wq = fmt::format("before_wq {}'s WQ matrix", i);
 
@@ -239,10 +239,10 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
         util::MpiLogger::toc(before_wq);
 
-        auto gemm_wq = fmt::format("gemm_wq {}'s WQT matrix and m,n,k is {},{},{}", i,
-                                    ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank], ctx.n);
+        // auto gemm_wq = fmt::format("gemm_wq {}'s WQT matrix and m,n,k is {},{},{}", i,
+        //                             ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank], ctx.n);
 
-        util::MpiLogger::tic(gemm_wq);
+        // util::MpiLogger::tic(gemm_wq);
 
         try {
             // 优化: 只对非零块进行计算
@@ -258,24 +258,24 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
 
-        util::MpiLogger::toc(gemm_wq);
+        // util::MpiLogger::toc(gemm_wq);
 
-        auto y_message = fmt::format(
-            "bcast_y {}'s Y matrix and communication is {} elements", i,
-            sender_m * ctx.cols_per_process);
+        // auto y_message = fmt::format(
+        //     "bcast_y {}'s Y matrix and communication is {} elements", i,
+        //     sender_m * ctx.cols_per_process);
 
-        util::MpiLogger::tic(y_message);
+        // util::MpiLogger::tic(y_message);
 
         ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
 
         cudaStreamSynchronize(ctx.stream);
 
-        util::MpiLogger::toc(y_message);
+        // util::MpiLogger::toc(y_message);
 
-        auto before_ywq = fmt::format("before_ywq {}'s YWQ matrix", i);
+        // auto before_ywq = fmt::format("before_ywq {}'s YWQ matrix", i);
 
-        util::MpiLogger::tic(before_ywq);
+        // util::MpiLogger::tic(before_ywq);
 
         thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
@@ -286,12 +286,12 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
             sender_m, ctx.cols_per_process);
 
-        util::MpiLogger::toc(before_ywq);
+        // util::MpiLogger::toc(before_ywq);
 
-        auto gemm_ywq = fmt::format("gemm_ywq {}'s YWTQ matrix and m,n,k is {},{},{}", i,
-                                     ctx.n, ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank]);
+        // auto gemm_ywq = fmt::format("gemm_ywq {}'s YWTQ matrix and m,n,k is {},{},{}", i,
+        //                              ctx.n, ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank]);
 
-        util::MpiLogger::tic(gemm_ywq);
+        // util::MpiLogger::tic(gemm_ywq);
 
         try {
             // 优化: 只对非零块进行计算
@@ -308,7 +308,7 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
 
-        util::MpiLogger::toc(gemm_ywq);
+        // util::MpiLogger::toc(gemm_ywq);
     }
 
     util::MpiLogger::toc("sb2syGenQT");
