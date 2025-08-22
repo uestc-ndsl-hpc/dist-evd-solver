@@ -160,6 +160,10 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
     cudaDataType_t cuda_type;
     cublasComputeType_t compute_type;
 
+    // Create compute stream for overlapping communication and computation
+    cudaStream_t compute_stream;
+    cudaStreamCreate(&compute_stream);
+
     util::MpiLogger::tic("sb2syGenW");
 
     if constexpr (std::is_same_v<T, float>) {
@@ -212,37 +216,35 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         // 计算发送方进程的 m 值，确保所有进程使用相同的广播数据量
         auto sender_m = ctx.n - wy_gpu_id * ctx.cols_per_process;
 
-        // auto w_message = fmt::format(
-        //     "bcast_w {}'s W matrix and communication is {} elements", i,
-        //     sender_m * ctx.cols_per_process);
-
-        // util::MpiLogger::tic(w_message);
-
+        // Start W matrix broadcast (asynchronous)
         ncclBcast(ctx.gpu_W_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
-        cudaStreamSynchronize(ctx.stream);
 
-        // util::MpiLogger::toc(w_message);
-
-        auto before_wq = fmt::format("before_wq {}'s WQ matrix", i);
-
-        util::MpiLogger::tic(before_wq);
-
-        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
+        // Prepare W data in communication stream (asynchronous)
+        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
-
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(
             ctx.gpu_W_rec.data(), sender_m,
             ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
             sender_m, ctx.cols_per_process);
 
-        util::MpiLogger::toc(before_wq);
+        // Record event when W data is ready
+        cudaEvent_t w_data_ready;
+        cudaEventCreate(&w_data_ready);
+        cudaEventRecord(w_data_ready, ctx.stream);
 
-        // auto gemm_wq = fmt::format("gemm_wq {}'s WQT matrix and m,n,k is {},{},{}", i,
-        //                             ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank], ctx.n);
+        // Start Y matrix broadcast (asynchronous) - can overlap with W computation
+        ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
+                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
 
-        // util::MpiLogger::tic(gemm_wq);
+        // Wait for W data and perform YTQ GEMM in compute stream
+        cudaStreamWaitEvent(compute_stream, w_data_ready, 0);
+        
+        // Save original cublas stream and set to compute stream
+        cudaStream_t original_stream;
+        cublasGetStream(ctx.cublas_handle, &original_stream);
+        cublasSetStream(ctx.cublas_handle, compute_stream);
 
         try {
             // 优化: 只对非零块进行计算
@@ -258,40 +260,25 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
 
-        // util::MpiLogger::toc(gemm_wq);
-
-        // auto y_message = fmt::format(
-        //     "bcast_y {}'s Y matrix and communication is {} elements", i,
-        //     sender_m * ctx.cols_per_process);
-
-        // util::MpiLogger::tic(y_message);
-
-        ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
-                  ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
-
+        // Wait for Y broadcast to complete in communication stream
         cudaStreamSynchronize(ctx.stream);
 
-        // util::MpiLogger::toc(y_message);
-
-        // auto before_ywq = fmt::format("before_ywq {}'s YWQ matrix", i);
-
-        // util::MpiLogger::tic(before_ywq);
-
-        thrust::fill(ctx.gpu_work.begin(), ctx.gpu_work.end(),
+        // Prepare Y data in communication stream
+        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(), ctx.gpu_work.end(),
                      static_cast<T>(0.0));
-
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(
             ctx.gpu_Y_rec.data(), sender_m,
             ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process, ctx.n,
             sender_m, ctx.cols_per_process);
 
-        // util::MpiLogger::toc(before_ywq);
+        // Record event when Y data is ready
+        cudaEvent_t y_data_ready;
+        cudaEventCreate(&y_data_ready);
+        cudaEventRecord(y_data_ready, ctx.stream);
 
-        // auto gemm_ywq = fmt::format("gemm_ywq {}'s YWTQ matrix and m,n,k is {},{},{}", i,
-        //                              ctx.n, ctx.cols_per_process, ctx.q_cols[ctx.mpi_config.rank]);
-
-        // util::MpiLogger::tic(gemm_ywq);
+        // Wait for Y data and perform WYTQ GEMM in compute stream
+        cudaStreamWaitEvent(compute_stream, y_data_ready, 0);
 
         try {
             // 优化: 只对非零块进行计算
@@ -308,10 +295,18 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                             wy_gpu_id, e.what()));
         }
 
-        // util::MpiLogger::toc(gemm_ywq);
+        // Restore original cublas stream
+        cublasSetStream(ctx.cublas_handle, original_stream);
+
+        // Clean up events
+        cudaEventDestroy(w_data_ready);
+        cudaEventDestroy(y_data_ready);
     }
 
     util::MpiLogger::toc("sb2syGenQT");
+
+    // Clean up compute stream
+    cudaStreamDestroy(compute_stream);
 
     return;
 }
