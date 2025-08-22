@@ -232,10 +232,13 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             sender_m, ctx.cols_per_process);
 
         try {
+            // 优化: 只对非零块进行计算
+            auto work_block = ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
+            auto q_block = ctx.gpu_Q.data() + wy_gpu_id * ctx.cols_per_process;
             matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
-                             ctx.q_cols[ctx.mpi_config.rank], ctx.n, T(1.0),
-                             ctx.gpu_work.data(), ctx.n, true, ctx.gpu_Q.data(),
-                             ctx.n, false, T(0.0), ctx.gpu_W_rec.data(), ctx.n);
+                             ctx.q_cols[ctx.mpi_config.rank], sender_m, T(1.0),
+                             work_block, ctx.n, true, q_block, ctx.n, false,
+                             T(0.0), ctx.gpu_W_rec.data(), ctx.n);
         } catch (std::exception& e) {
             throw std::runtime_error(
                 fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 YTQ 矩阵 {}",
@@ -265,11 +268,14 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
             sender_m, ctx.cols_per_process);
 
         try {
-            matrix_ops::gemm(ctx.cublas_handle, ctx.n, ctx.cols_per_process,
+            // 优化: 只对非零块进行计算
+            auto work_block = ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
+            auto w_rec_block = ctx.gpu_W_rec.data();
+            auto q_block = ctx.gpu_Q.data() + wy_gpu_id * ctx.cols_per_process;
+            matrix_ops::gemm(ctx.cublas_handle, static_cast<size_t>(sender_m), ctx.cols_per_process,
                              ctx.q_cols[ctx.mpi_config.rank], T(-1.0),
-                             ctx.gpu_work.data(), ctx.n, false,
-                             ctx.gpu_W_rec.data(), ctx.n, false, T(1.0),
-                             ctx.gpu_Q.data(), ctx.n);
+                             work_block, ctx.n, false, w_rec_block, ctx.n, false,
+                             T(1.0), q_block, ctx.n);
         } catch (std::exception& e) {
             throw std::runtime_error(
                 fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 WYTQ 矩阵 {}",
