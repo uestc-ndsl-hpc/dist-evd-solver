@@ -13,6 +13,8 @@
 namespace matrix_ops {
 namespace mpi {
 
+constexpr size_t U_LEN_PROC_1TIME = 256;
+
 // MpiSb2syGenQContext 类方法实现
 template <typename T>
 MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
@@ -54,7 +56,7 @@ MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,
     gpu_work.resize(local_matrix_size);
 
     // 这里可以考虑一下设计, 方便负载均衡
-    gpu_Q.resize(q_cols[mpi_config.rank] * n);
+    gpu_Q.resize(q_cols[mpi_config.rank] * (n + U_LEN_PROC_1TIME));
     gpu_W_rec.resize(local_matrix_size);
     gpu_Y_rec.resize(local_matrix_size);
 
@@ -77,19 +79,27 @@ void MpiSb2syGenQContext<T>::initializeQMatrix() {
     }
 
     // Copy member variables to local variables for device lambda
-    auto local_n = n;
     auto local_base_offset = base_offset;
     auto gpu_Q_ptr = thrust::raw_pointer_cast(gpu_Q.data());
+    auto ldQ = U_LEN_PROC_1TIME + n;
+    auto local_q_cols = q_cols[mpi_config.rank];
+    auto local_n = n;  // capture n as a plain value for device lambda
 
     thrust::for_each(
         thrust::make_counting_iterator<size_t>(0),
-        thrust::make_counting_iterator<size_t>(q_cols[mpi_config.rank] * n),
+        thrust::make_counting_iterator<size_t>(local_q_cols * ldQ),
         [=] __device__(size_t idx) {
-            auto row = idx % local_n;
-            auto col = idx / local_n;
-            if (local_base_offset + col == row) {
-                gpu_Q_ptr[idx] = static_cast<T>(1.0);
+            auto row = idx % ldQ;
+            auto col = idx / ldQ;
+            // 检查边界：确保不访问超出矩阵范围的内存
+            if (row < local_n && col < local_q_cols) {
+                if (local_base_offset + col == row) {
+                    gpu_Q_ptr[idx] = static_cast<T>(1.0);
+                } else {
+                    gpu_Q_ptr[idx] = static_cast<T>(0.0);
+                }
             } else {
+                // 对于超出矩阵范围的填充区域，设置为0
                 gpu_Q_ptr[idx] = static_cast<T>(0.0);
             }
         });
@@ -202,6 +212,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
     util::MpiLogger::tic("sb2syGenQT");
 
+    auto ldQ = ctx.n + U_LEN_PROC_1TIME;
+
     // (I - WYT)Q 左乘, 是一个依次的发送到乘的故事 就是 Q - W (YTQ)
     for (auto i = 0; i < ctx.mpi_config.size; ++i) {
         auto wy_gpu_id = i;
@@ -221,8 +233,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
 
         // Prepare W data in communication stream (asynchronous)
-        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(), ctx.gpu_work.end(),
-                     static_cast<T>(0.0));
+        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(),
+                     ctx.gpu_work.end(), static_cast<T>(0.0));
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(
             ctx.gpu_W_rec.data(), sender_m,
@@ -234,13 +246,14 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         cudaEventCreate(&w_data_ready);
         cudaEventRecord(w_data_ready, ctx.stream);
 
-        // Start Y matrix broadcast (asynchronous) - can overlap with W computation
+        // Start Y matrix broadcast (asynchronous) - can overlap with W
+        // computation
         ncclBcast(ctx.gpu_Y_rec.data().get(), sender_m * ctx.cols_per_process,
                   ctx.nccl_type, wy_gpu_id, ctx.nccl_comm, ctx.stream);
 
         // Wait for W data and perform YTQ GEMM in compute stream
         cudaStreamWaitEvent(compute_stream, w_data_ready, 0);
-        
+
         // Save original cublas stream and set to compute stream
         cudaStream_t original_stream;
         cublasGetStream(ctx.cublas_handle, &original_stream);
@@ -248,11 +261,12 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
         try {
             // 优化: 只对非零块进行计算
-            auto work_block = ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
+            auto work_block =
+                ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
             auto q_block = ctx.gpu_Q.data() + wy_gpu_id * ctx.cols_per_process;
             matrix_ops::gemm(ctx.cublas_handle, ctx.cols_per_process,
                              ctx.q_cols[ctx.mpi_config.rank], sender_m, T(1.0),
-                             work_block, ctx.n, true, q_block, ctx.n, false,
+                             work_block, ctx.n, true, q_block, ldQ, false,
                              T(0.0), ctx.gpu_W_rec.data(), ctx.n);
         } catch (std::exception& e) {
             throw std::runtime_error(
@@ -264,8 +278,8 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
         cudaStreamSynchronize(ctx.stream);
 
         // Prepare Y data in communication stream
-        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(), ctx.gpu_work.end(),
-                     static_cast<T>(0.0));
+        thrust::fill(thrust::cuda::par.on(ctx.stream), ctx.gpu_work.begin(),
+                     ctx.gpu_work.end(), static_cast<T>(0.0));
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(
             ctx.gpu_Y_rec.data(), sender_m,
@@ -282,13 +296,15 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
 
         try {
             // 优化: 只对非零块进行计算
-            auto work_block = ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
+            auto work_block =
+                ctx.gpu_work.data() + wy_gpu_id * ctx.cols_per_process;
             auto w_rec_block = ctx.gpu_W_rec.data();
             auto q_block = ctx.gpu_Q.data() + wy_gpu_id * ctx.cols_per_process;
-            matrix_ops::gemm(ctx.cublas_handle, static_cast<size_t>(sender_m), ctx.cols_per_process,
+            matrix_ops::gemm(ctx.cublas_handle, static_cast<size_t>(sender_m),
+                             ctx.cols_per_process,
                              ctx.q_cols[ctx.mpi_config.rank], T(-1.0),
-                             work_block, ctx.n, false, w_rec_block, ctx.n, false,
-                             T(1.0), q_block, ctx.n);
+                             work_block, ctx.n, false, w_rec_block, ctx.n,
+                             false, T(1.0), q_block, ldQ);
         } catch (std::exception& e) {
             throw std::runtime_error(
                 fmt::format("CUBLAS 错误: 无法计算第 {} 卡的 WYTQ 矩阵 {}",

@@ -65,21 +65,31 @@ void print(thrust::device_vector<T>& data, size_t n,
     print(data, n, n, title);
 }
 
+template <typename T>
+void print(thrust::device_vector<T> data, size_t m, size_t n, size_t lda,
+           const std::string& title) {
+    print(data.data(), m, n, lda, title);
+}
+
 // Explicitly instantiate the templates to allow for separate compilation
 template void print<float>(thrust::device_vector<float>&, size_t, size_t,
-                           const std::string&);
+                            const std::string&);
 template void print<double>(thrust::device_vector<double>&, size_t,
                             size_t, const std::string&);
 template void print<float>(thrust::device_vector<float>&, size_t,
-                           const std::string&);
+                            const std::string&);
 template void print<double>(thrust::device_vector<double>&, size_t,
                             const std::string&);
+template void print<float>(thrust::device_vector<float>, size_t, size_t, size_t,
+                            const std::string&);
+template void print<double>(thrust::device_vector<double>, size_t, size_t, size_t,
+                            const std::string&);
 template void print<float>(thrust::device_ptr<float>, size_t, size_t,
-                           const std::string&);
+                            const std::string&);
 template void print<double>(thrust::device_ptr<double>, size_t, size_t,
                             const std::string&);
 template void print<float>(thrust::device_ptr<float>, size_t, size_t, size_t,
-                           const std::string&);
+                            const std::string&);
 template void print<double>(thrust::device_ptr<double>, size_t, size_t, size_t,
                             const std::string&);
 template void print<float>(float*, size_t, size_t, size_t, const std::string&);

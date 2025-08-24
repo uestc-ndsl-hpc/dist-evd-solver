@@ -239,9 +239,12 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         if (debug) {
             for (auto i = 0; i < mpi_config.size; ++i) {
                 if (i == rank) {
+                    util::MpiLogger::println(
+                        "Q matrix after sb2sy GenQ  size is {}",
+                        sb2sy_genQ_context.gpu_Q.size());
                     matrix_ops::print(
                         sb2sy_genQ_context.gpu_Q, n,
-                        sb2sy_genQ_context.q_cols[rank],
+                        sb2sy_genQ_context.q_cols[rank], n + 256,
                         fmt::format("[rank:{}] Q matrix after sb2sy GenQ",
                                     rank));
                 }
