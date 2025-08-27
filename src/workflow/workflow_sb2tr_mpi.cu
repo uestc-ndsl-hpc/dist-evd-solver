@@ -1,5 +1,6 @@
 #include <cuda_runtime.h>
 #include <mpi.h>
+#include <thrust/universal_vector.h>
 
 #include "gpu_handle_wrappers.h"
 #include "log.h"
@@ -254,6 +255,31 @@ void run_workflow_sb2tr_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     }
 
     util::MpiLogger::toc("SBR+SBR Back");
+
+    {
+        // 创建 MPI sb2tr 上下文
+        util::MpiLogger::tic("sb2tr_mpi_context_creation");
+        matrix_ops::mpi::MpiSb2trContext<T> tr2sb_context(mpi_config,
+                                                          sy2sb_result_buffers);
+        util::MpiLogger::toc("sb2tr_mpi_context_creation");
+
+        // 执行 MPI sb2tr 算法
+        util::MpiLogger::tic("sb2tr_mpi_computation");
+        matrix_ops::mpi::sb2tr<T>(tr2sb_context);
+        util::MpiLogger::toc("sb2tr_mpi_computation");
+    }
+
+    thrust::universal_vector<T> S_h;
+    thrust::universal_vector<T> E_h;
+    thrust::universal_vector<T> subU_h;
+
+    if (rank == 0) {
+        S_h.resize(n);
+        E_h.resize(n);
+    } else {
+        S_h.resize(n / total_gpus);
+        E_h.resize(n / total_gpus);
+    }
 
     // 在上下文析构之后再调用 MPI_Finalize
     MPI_Finalize();
