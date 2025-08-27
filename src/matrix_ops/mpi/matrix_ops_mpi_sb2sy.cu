@@ -13,8 +13,6 @@
 namespace matrix_ops {
 namespace mpi {
 
-constexpr size_t U_LEN_PROC_1TIME = 256;
-
 // MpiSb2syGenQContext 类方法实现
 template <typename T>
 MpiSb2syGenQContext<T>::MpiSb2syGenQContext(const MpiConfig& config,

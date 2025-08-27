@@ -7,8 +7,10 @@ CompileFlags:
         -  '--extended-lambda'
         - '-Xlinker=-allow-multiple-definition'
         - '-rdc=true'
+        - '--options-file'
     Add:
         -  '--no-cuda-version-check'
+        -  '-I./src/include/common'
         -  '--cuda-path=/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda'
         -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/math_libs/include'
         -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/hpcx/latest/ompi/include'

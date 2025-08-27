@@ -256,6 +256,21 @@ void run_workflow_sb2tr_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     util::MpiLogger::toc("SBR+SBR Back");
 
+    thrust::universal_vector<T> S_h;
+    thrust::universal_vector<T> E_h;
+    thrust::universal_vector<T> subU_h;
+
+    if (rank == 0) {
+        S_h.resize(n);
+        E_h.resize(n);
+        subU_h.resize((n + total_gpus * 2 * b) * n);
+
+    } else {
+        S_h.resize(n / total_gpus);
+        E_h.resize(n / total_gpus);
+        subU_h.resize((n / total_gpus + 2 * b) * n);
+    }
+
     {
         // 创建 MPI sb2tr 上下文
         util::MpiLogger::tic("sb2tr_mpi_context_creation");
@@ -267,18 +282,41 @@ void run_workflow_sb2tr_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         util::MpiLogger::tic("sb2tr_mpi_computation");
         matrix_ops::mpi::sb2tr<T>(tr2sb_context);
         util::MpiLogger::toc("sb2tr_mpi_computation");
-    }
 
-    thrust::universal_vector<T> S_h;
-    thrust::universal_vector<T> E_h;
-    thrust::universal_vector<T> subU_h;
+        util::MpiLogger::tic("Gather_S&E_for_DC");
 
-    if (rank == 0) {
-        S_h.resize(n);
-        E_h.resize(n);
-    } else {
-        S_h.resize(n / total_gpus);
-        E_h.resize(n / total_gpus);
+        auto p_dSubA = thrust::device_pointer_cast(tr2sb_context.gpu_subA);
+        auto p_S_h = thrust::raw_pointer_cast(S_h.data());
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
+            p_dSubA, tr2sb_context.ldSubA, p_S_h, (size_t)1, (size_t)1,
+            tr2sb_context.cols_cur_node_process);
+
+        MPI_Gather(p_S_h, tr2sb_context.cols_cur_node_process,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, p_S_h,
+                   tr2sb_context.cols_cur_node_process,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
+                   MPI_COMM_WORLD);
+
+        p_dSubA = thrust::device_pointer_cast(tr2sb_context.gpu_subA + 1);
+        auto p_E_h = thrust::raw_pointer_cast(E_h.data());
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
+            p_dSubA, tr2sb_context.ldSubA, p_E_h, (size_t)1, (size_t)1,
+            tr2sb_context.cols_cur_node_process);
+
+        MPI_Gather(p_E_h, tr2sb_context.cols_cur_node_process,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, p_E_h,
+                   tr2sb_context.cols_cur_node_process,
+                   std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
+                   MPI_COMM_WORLD);
+
+        util::MpiLogger::toc("Gather_S&E_for_DC");
+
+        util::MpiLogger::tic("Gather_U_for_BC_Back");
+        auto p_subU_h = thrust::raw_pointer_cast(subU_h.data());
+        auto p_gpu_U = thrust::raw_pointer_cast(tr2sb_context.gpu_U.data());
+        cudaMemcpy(p_subU_h, p_gpu_U, tr2sb_context.ldU * n,
+                   cudaMemcpyDeviceToHost);
+        util::MpiLogger::toc("Gather_U_for_BC_Back");
     }
 
     // 在上下文析构之后再调用 MPI_Finalize

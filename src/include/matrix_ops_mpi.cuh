@@ -3,6 +3,7 @@
 #include <mpi.h>
 #include <nccl.h>
 #include <thrust/device_vector.h>
+#include <thrust/universal_vector.h>
 
 #include <cstddef>
 
@@ -208,6 +209,65 @@ class MpiSb2syGenQContext {
     void initializeQMatrix();
 };
 
+template <typename T>
+struct Tr2sbBuffers {
+    // GPU 显存
+    thrust::device_vector<T> Q;
+    thrust::device_vector<T> U;
+
+    // 算法参数
+    size_t n;
+    size_t b;
+
+    size_t ldQ;
+    size_t ldU;
+};
+
+template <typename T>
+class MpiTr2sbGenQContext {
+   public:
+    // MPI 配置
+    MpiConfig mpi_config;
+
+    // 算法参数
+    size_t n;
+    size_t b;
+
+    // 分块信息
+    size_t cols_per_process;
+
+    std::vector<size_t> q_cols;
+
+    // GPU 资源 (每个进程一个 GPU)
+
+    size_t sweepCount;
+    size_t lastSweepUCount;
+
+    cudaStream_t stream;
+
+    // GPU 显存信息
+    thrust::universal_vector<T> U;
+    size_t ldU;
+
+    thrust::universal_vector<T> subU;
+    size_t ldSubU;
+
+    thrust::universal_vector<T> subU_rev;
+    thrust::device_vector<T> gpu_subU;
+
+    thrust::device_vector<T> gpu_Q;
+    size_t ldQ;
+
+    MpiTr2sbGenQContext(const MpiConfig& config, Sy2sbResultBuffers<T>& buffers,
+                        Tr2sbBuffers<T>& tr2sbBuffer,
+                        thrust::universal_vector<T>& U_h);
+
+    ~MpiTr2sbGenQContext();
+
+    // 需要将sy2sb的Q复制到拷贝到tr2sb中
+    void initializeQMatrix();
+};
+
 namespace internal {
 // 内部函数声明
 template <typename T>
@@ -236,9 +296,9 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& context);
 
 /**
  * @brief MPI 版本的 sb2tr 主函数
- * 
- * @tparam T 
- * @param context 
+ *
+ * @tparam T
+ * @param context
  */
 template <typename T>
 void sb2tr(MpiSb2trContext<T>& context);

@@ -17,6 +17,14 @@
 #include "gpu_handle_wrappers.h"
 #include "log.h"
 
+// for a800
+#define MAX_WARP_COUNT 16
+#define U_COL_EXRTERN_COUNT 64
+
+#define U_COUNT 8
+#define U_LEN_PROC_1TIME (U_COUNT * 32)
+#define SYNC_THREAD_NUM (32 / U_COUNT)
+
 // fmt::formatter for cublasStatus_t
 template <>
 struct fmt::formatter<cublasStatus_t> {
