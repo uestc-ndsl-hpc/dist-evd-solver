@@ -19,3 +19,6 @@ void run_workflow_sb2sy_mpi(size_t n, bool validate, int num_gpus = 1, size_t nb
 
 template <typename T>
 void run_workflow_sb2tr_mpi(size_t n, bool validate, int num_gpus = 1, size_t nb = 64, size_t b = 16, bool debug = false);
+
+template <typename T>
+void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus = 1, size_t nb = 64, size_t b = 16, bool debug = false);

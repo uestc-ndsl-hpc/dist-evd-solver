@@ -303,5 +303,11 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& context);
 template <typename T>
 void sb2tr(MpiSb2trContext<T>& context);
 
+/**
+ * @brief MPI 版本的 tr2sb 主函数
+ */
+template <typename T>
+void tr2sbGenQ(MpiTr2sbGenQContext<T>& context);
+
 }  // namespace mpi
 }  // namespace matrix_ops

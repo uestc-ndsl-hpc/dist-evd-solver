@@ -63,11 +63,13 @@ add_library(dist-evd-solver-lib
     src/matrix_ops/matrix_ops_gemm.cu
     src/matrix_ops/matrix_ops_sb2tr.cu
     src/matrix_ops/matrix_ops_syr2k.cu
+    src/matrix_ops/matrix_ops_tr2sb.cu
     src/matrix_ops/internal/sy2sb/sy2sb_panelqr.cu
     src/matrix_ops/dist/matrix_ops_dist_sy2sb.cu
     src/matrix_ops/mpi/matrix_ops_mpi_sy2sb.cu
     src/matrix_ops/mpi/matrix_ops_mpi_sb2sy.cu
     src/matrix_ops/mpi/matrix_ops_mpi_sb2tr.cu
+    src/matrix_ops/mpi/matrix_ops_mpi_tr2sb.cu
 )
 
 target_include_directories(dist-evd-solver-lib
@@ -120,7 +122,7 @@ target_link_options(dist-evd-solver-lib PRIVATE
 # --- MPI 可执行文件定义 ---
 add_executable(dist-evd-solver-mpi
     src/main-mpi.cu
-    src/workflow/workflow_sb2tr_mpi.cu
+    src/workflow/workflow_tr2sb_mpi.cu
 )
 
 target_link_libraries(dist-evd-solver-mpi

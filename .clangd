@@ -19,3 +19,4 @@ CompileFlags:
         -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/googletest-src/googletest/include'
         -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nccl/include'
         -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/include'
+        -  '-I/home/ruinique/intel/oneapi/mkl/latest/include'

@@ -1,6 +1,6 @@
-#include <mpi.h>
 #include <cusolverDn.h>
 #include <fmt/format.h>
+#include <mpi.h>
 
 #include <cstddef>
 
@@ -14,20 +14,23 @@ int main(int argc, char** argv) {
 
     // Show help if requested
     if (cmdl[{"-h", "--help"}]) {
-        fmt::print("Usage: {} [options]\n"
-                  "Options:\n"
-                  "  -n, --size <size>      Matrix size (default: 4)\n"
-                  "  -m, --m <size>         Secondary matrix size (default: same as n)\n"
-                  "  -g, --gpu-num <num>    Number of GPUs (default: 2)\n"
-                  "  -nb, --nb <size>       Block size for recursion (default: 64)\n"
-                  "  -b, --b <size>         Panel size (default: 16)\n"
-                  "  -v, --verbose          Enable verbose output\n"
-                  "  -t, --time             Enable timing output\n"
-                  "  -d, --debug            Enable debug output\n"
-                  "  --validate             Enable result validation\n"
-                  "  --double               Use double precision\n"
-                  "  --float                Use single precision (default)\n"
-                  "  -h, --help             Show this help message\n", argv[0]);
+        fmt::print(
+            "Usage: {} [options]\n"
+            "Options:\n"
+            "  -n, --size <size>      Matrix size (default: 4)\n"
+            "  -m, --m <size>         Secondary matrix size (default: same as "
+            "n)\n"
+            "  -g, --gpu-num <num>    Number of GPUs (default: 2)\n"
+            "  -nb, --nb <size>       Block size for recursion (default: 64)\n"
+            "  -b, --b <size>         Panel size (default: 16)\n"
+            "  -v, --verbose          Enable verbose output\n"
+            "  -t, --time             Enable timing output\n"
+            "  -d, --debug            Enable debug output\n"
+            "  --validate             Enable result validation\n"
+            "  --double               Use double precision\n"
+            "  --float                Use single precision (default)\n"
+            "  -h, --help             Show this help message\n",
+            argv[0]);
         return 0;
     }
 
@@ -50,16 +53,17 @@ int main(int argc, char** argv) {
     auto b = (size_t)16;
     cmdl({"-b", "--b"}, 16) >> b;
 
-    // Initialize logger (will be used by all ranks, but main info printed only by rank 0)
+    // Initialize logger (will be used by all ranks, but main info printed only
+    // by rank 0)
     util::Logger::init(verbose);
     util::Logger::init_timer(print_time);
 
     if (cmdl[{"--double"}]) {
-        run_workflow_sb2tr_mpi<double>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_tr2sb_mpi<double>(n, validate, gpu_num, nb, b, debug);
     } else if (cmdl[{"--float"}]) {
-        run_workflow_sb2tr_mpi<float>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_tr2sb_mpi<float>(n, validate, gpu_num, nb, b, debug);
     } else {
-        run_workflow_sb2tr_mpi<float>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_tr2sb_mpi<float>(n, validate, gpu_num, nb, b, debug);
     }
 
     return 0;
