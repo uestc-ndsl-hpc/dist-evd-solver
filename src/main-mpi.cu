@@ -55,11 +55,11 @@ int main(int argc, char** argv) {
     util::Logger::init_timer(print_time);
 
     if (cmdl[{"--double"}]) {
-        run_workflow_sb2sy_mpi<double>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_sb2tr_mpi<double>(n, validate, gpu_num, nb, b, debug);
     } else if (cmdl[{"--float"}]) {
-        run_workflow_sb2sy_mpi<float>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_sb2tr_mpi<float>(n, validate, gpu_num, nb, b, debug);
     } else {
-        run_workflow_sb2sy_mpi<float>(n, validate, gpu_num, nb, b, debug);
+        run_workflow_sb2tr_mpi<float>(n, validate, gpu_num, nb, b, debug);
     }
 
     return 0;

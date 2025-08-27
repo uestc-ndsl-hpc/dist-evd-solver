@@ -55,6 +55,45 @@ struct Sy2sbResultBuffers {
 };
 
 template <typename T>
+class MpiSb2trContext {
+   public:
+    // MPI 配置
+    MpiConfig mpi_config;
+
+    // 算法参数
+    size_t n;
+    size_t b;
+
+    size_t ldSubA, ldU;
+
+    // 分块信息
+    size_t cols_cur_node_process;
+
+    // GPU 资源 (每个进程一个 GPU)
+    cudaStream_t stream;
+
+    // GPU 显存信息
+    thrust::device_vector<T> gpu_A;
+
+    T* gpu_subA;
+    thrust::device_vector<T> gpu_U;
+
+    // NVSHmem 内存信息, 使用NVShmem进行通信
+    int* prePEWriteCom;
+    int* nextPEWriteTailSweepProcRow;
+
+    // GPU 内存信息, 用于同1PE内部的多趟BC之间进行通信
+    thrust::device_vector<int> com;
+
+    MpiSb2trContext(const MpiConfig& config, Sy2sbResultBuffers<T>& buffers);
+
+    ~MpiSb2trContext();
+
+    // 需要将sy2sb的Q复制到拷贝到tr2sb中
+    void copyMatrixA2SubA();
+};
+
+template <typename T>
 class MpiSy2sbContext {
    public:
     // MPI 配置

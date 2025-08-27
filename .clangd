@@ -5,6 +5,8 @@ CompileFlags:
         - '-arch=*'
         - '-Xcompiler=-fopenmp'
         -  '--extended-lambda'
+        - '-Xlinker=-allow-multiple-definition'
+        - '-rdc=true'
     Add:
         -  '--no-cuda-version-check'
         -  '--cuda-path=/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/cuda'
@@ -14,3 +16,4 @@ CompileFlags:
         -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/googletest-src/googlemock/include'
         -  '-I/home/ruinique/dev/dist-evd-solver/build/_deps/googletest-src/googletest/include'
         -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nccl/include'
+        -  '-I/home/ruinique/local/nvidia/hpc_sdk/Linux_x86_64/25.3/comm_libs/12.8/nvshmem/include'

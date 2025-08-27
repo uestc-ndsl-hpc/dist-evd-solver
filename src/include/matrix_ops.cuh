@@ -290,4 +290,27 @@ void syr2k(const common::CublasHandle& handle, size_t n, size_t k, T alpha,
            thrust::device_ptr<T> A, size_t lda, thrust::device_ptr<T> B,
            size_t ldb, T beta, thrust::device_ptr<T> C, size_t ldc);
 
+namespace sb2tr {
+
+// 函数说明
+
+template <typename T>
+void sb2tr(int n, int b, int ns, T* dSubA, int ldSubA, T* dU, int ldU,
+           int PEIndex, int PENum, int* com, int* prePEWriteCom,
+           int* nextPEWriteTailSweepProcRow);
+
+template <typename T>
+__global__ void kernel_bugle_chasing_cpydA2dSubA(int n, int b, int cols_perPE,
+                                                 int rank, T* dA, long ldA,
+                                                 T* dSubA, int ldSubA);
+
+}  // namespace sb2tr
+
+namespace tr2sb {
+template <typename T>
+__global__ void BC_kernel_computerQ_1Col_V8_10(
+    int n, int perBlockN, int largeBlockNum, int sweepCount,
+    int lastSweepUCount, int sweepIndex, T* dCU, T* dQ, long ldQ);
+}  // namespace tr2sb
+
 }  // namespace matrix_ops
