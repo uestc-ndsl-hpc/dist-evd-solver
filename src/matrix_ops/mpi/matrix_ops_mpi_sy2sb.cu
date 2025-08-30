@@ -5,6 +5,11 @@
 
 #include <cstddef>
 #include <stdexcept>
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <cuda_runtime.h>
+#include <sstream>
 
 #include "fmt/format.h"
 #include "log.h"
@@ -35,10 +40,22 @@ MpiSy2sbContext<T>::MpiSy2sbContext(const MpiConfig& config, size_t matrix_n,
       A_host(A),
       W_host(W),
       Y_host(Y) {
-    // 计算分块信息
+    // 默认使用现有 Blockwise 策略；支持通过环境变量预先切换为 BlockCyclic1D
+    dist_type = DistributionType::Blockwise;
+    block_size_bs = nb;  // block-cyclic 缺省使用 nb
+    if (const char* dist_env = std::getenv("EVD_DIST")) {
+        if (!std::strcmp(dist_env, "cyclic") ||
+            !std::strcmp(dist_env, "blockcyclic") || !std::strcmp(dist_env, "bc")) {
+            dist_type = DistributionType::BlockCyclic1D;
+        }
+    }
+
+    // 计算分块信息（Blockwise）
     cols_per_process = n / mpi_config.size;
     start_col = mpi_config.rank * cols_per_process;
     local_matrix_size = cols_per_process * n;
+    // 预计算当前策略下本地列数
+    local_cols = computeLocalCols();
     if constexpr (std::is_same_v<T, float>) {
         nccl_type = ncclFloat32;
     } else if constexpr (std::is_same_v<T, double>) {
@@ -58,7 +75,10 @@ MpiSy2sbContext<T>::~MpiSy2sbContext() {
 // 工具函数：计算给定列偏移对应的MPI进程
 template <typename T>
 size_t MpiSy2sbContext<T>::computeProcessForColumn(size_t col_offset) const {
-    return col_offset / cols_per_process;
+    if (dist_type == DistributionType::Blockwise) {
+        return col_offset / cols_per_process;
+    }
+    return ownerOfCol(col_offset);
 }
 
 // 工具函数：判断给定列是否属于当前进程
@@ -74,7 +94,11 @@ size_t MpiSy2sbContext<T>::getLocalColumnIndex(size_t global_col) const {
     if (!isLocalColumn(global_col)) {
         throw std::out_of_range("Column is not local to this process");
     }
-    return global_col - start_col;
+    // 与分布策略绑定
+    if (dist_type == DistributionType::Blockwise) {
+        return global_col - start_col;
+    }
+    return localColIndex(global_col);
 }
 
 template <typename T>
@@ -176,20 +200,28 @@ void MpiSy2sbContext<T>::initCommunication() {
 
 template <typename T>
 void MpiSy2sbContext<T>::allocateGpuMemory() {
-    // 计算矩阵分布：每个进程负责 n/size 列（按列分块）
-    if (n % mpi_config.size != 0) {
-        throw std::runtime_error("Matrix size must be divisible by MPI size");
+    // 计算矩阵分布：
+    // Blockwise 要求 n 能被 size 整除；BlockCyclic1D 无此硬性要求
+    if (dist_type == DistributionType::Blockwise) {
+        if (n % mpi_config.size != 0) {
+            throw std::runtime_error(
+                "Matrix size must be divisible by MPI size (blockwise)");
+        }
     }
 
     // 设置当前 GPU 设备
     cudaSetDevice(mpi_config.local_gpu_id);
 
     // 分配各个矩阵的 GPU 内存 (直接调用 resize)
-    // A, W, Y, oriA: 存储本地矩阵块 (n × cols_per_process) 按列分块
-    gpu_A.resize(local_matrix_size);
-    gpu_W.resize(local_matrix_size);
-    gpu_Y.resize(local_matrix_size);
-    gpu_oriA.resize(local_matrix_size);  // 原始矩阵 A 的备份
+    // A, W, Y, oriA: 存储本地矩阵块，按当前分布策略打包为连续列
+    size_t cols_owned = (dist_type == DistributionType::Blockwise)
+                            ? cols_per_process
+                            : local_cols;
+    size_t local_elems = cols_owned * n;
+    gpu_A.resize(local_elems);
+    gpu_W.resize(local_elems);
+    gpu_Y.resize(local_elems);
+    gpu_oriA.resize(local_elems);  // 原始矩阵 A 的备份
 
     // R: 存储 QR 分解的上三角矩阵 (n × nb)
     gpu_R.resize(n * nb);
@@ -212,15 +244,36 @@ void MpiSy2sbContext<T>::allocateGpuMemory() {
 template <typename T>
 void MpiSy2sbContext<T>::copyHostToGpu() {
     try {
-        // 按列复制 A 矩阵的本地部分
-        // 对于列主序存储，我们需要复制连续的列块
-        thrust::copy(A_host + start_col * n,
-                     A_host + start_col * n + local_matrix_size, gpu_A.begin());
-
-        // 同时复制到 oriA 作为原始矩阵的备份
-        thrust::copy(A_host + start_col * n,
-                     A_host + start_col * n + local_matrix_size,
-                     gpu_oriA.begin());
+        if (dist_type == DistributionType::Blockwise) {
+            // 按列复制 A 矩阵的本地连续部分
+            thrust::copy(A_host + start_col * n,
+                         A_host + start_col * n + local_matrix_size,
+                         gpu_A.begin());
+            // 同时复制到 oriA 作为原始矩阵的备份
+            thrust::copy(A_host + start_col * n,
+                         A_host + start_col * n + local_matrix_size,
+                         gpu_oriA.begin());
+        } else {
+            // BlockCyclic1D: 逐列打包复制
+            auto bs = block_size_bs;
+            size_t local_idx = 0;
+            for (size_t j = 0; j < n; ++j) {
+                if (ownerOfCol(j) == static_cast<size_t>(mpi_config.rank)) {
+                    // 列 j 的本地列号
+                    size_t lc = localColIndex(j);
+                    // 源列起始指针（列主序）
+                    const T* src = A_host + j * n;
+                    // 目标列起始指针（列主序，打包）
+                    thrust::device_ptr<T> dst = gpu_A.data() + lc * n;
+                    // 拷贝 n 元素（整列）
+                    thrust::copy(src, src + n, dst);
+                    // 备份 oriA
+                    thrust::device_ptr<T> dst_ori = gpu_oriA.data() + lc * n;
+                    thrust::copy(src, src + n, dst_ori);
+                    local_idx += 1;
+                }
+            }
+        }
     } catch (const std::exception& e) {
         throw std::runtime_error(
             fmt::format("Failed to copy host data to GPU: {}", e.what()));
@@ -254,7 +307,41 @@ void MpiSy2sbContext<T>::cleanup() {
     cudaStreamDestroy(stream);
 }
 
+// 计算 block-cyclic (1D) 下本地列数
+template <typename T>
+size_t MpiSy2sbContext<T>::computeLocalCols() const {
+    if (dist_type == DistributionType::Blockwise) {
+        return cols_per_process;
+    }
+    auto P = static_cast<size_t>(mpi_config.size);
+    auto r = static_cast<size_t>(mpi_config.rank);
+    auto bs = block_size_bs > 0 ? block_size_bs : nb;
+    size_t full_blocks = n / bs;
+    size_t tail = n % bs;
+
+    size_t base_blocks = full_blocks / P;
+    size_t extra_blocks = (r < (full_blocks % P)) ? 1 : 0;
+    size_t cols = (base_blocks + extra_blocks) * bs;
+    // 处理尾块
+    if (tail > 0 && (full_blocks % P) == r) {
+        cols += tail;
+    }
+    return cols;
+}
+
 namespace internal {
+
+// 前向声明：调试用 CUDA 同步打印
+static inline void debug_cuda_sync(const char* where);
+
+// 定义：调试用 CUDA 同步打印（放在相同命名空间内，避免链接问题）
+static inline void debug_cuda_sync(const char* where) {
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        util::MpiLogger::error("[CUDA] {}: {}", where,
+                               cudaGetErrorString(err));
+    }
+}
 
 /**
  * @brief Functor to copy the lower triangular part of a matrix to the upper
@@ -313,108 +400,198 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
                       size_t panel_n, size_t i, size_t lda, size_t ldw,
                       size_t ldz, size_t recrusive_offset,
                       size_t recrusive_offset_finished) {
-    auto rest_gpu_num = ctx.mpi_config.size - gpu_index;
+    if (ctx.dist_type == DistributionType::Blockwise) {
+        auto rest_gpu_num = ctx.mpi_config.size - gpu_index;
 
-    // single card
-    if (rest_gpu_num == 1) {
-        auto oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
-                          ctx.start_col * ctx.n + i * lda + i;
-        auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
-                           ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
-        auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
-        matrix_ops::gemm(ctx.cublas_handle, panel_m, ctx.b, panel_m, (T)1,
-                         oriA_panel, lda, false, panel_W_ptr, ldw, false, (T)0,
-                         panel_Z_ptr, ldz);
-    } else {
-        if (ctx.mpi_config.rank == gpu_index) {
-            // copy W to workspace
+        // single card
+        if (rest_gpu_num == 1) {
+            auto oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
+                              ctx.start_col * ctx.n + i * lda + i;
             auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
                                ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
-            matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                    thrust::device_ptr<T>, T>(
-                panel_W_ptr, ldw, ctx.gpu_work.data(), panel_m, panel_m, ctx.b);
-        }
-
-        // 使用子通信组进行广播
-        auto& sub_comm = ctx.sub_comm_groups[gpu_index];
-        if (sub_comm != nullptr) {
-            // root进程在子通信组中的rank是0
-            ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m, ctx.nccl_type,
-                      0, sub_comm, ctx.stream);
-            cudaStreamSynchronize(ctx.stream);
-        }
-
-        auto oriA_panel = ctx.gpu_oriA.data() + i + recrusive_offset_finished;
-        auto z_panel_rows = ctx.cols_per_process;
-
-        if (gpu_index == ctx.mpi_config.rank) {
-            oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
-                         ctx.start_col * ctx.n + i + i * lda;
-            z_panel_rows = panel_m - ctx.cols_per_process * (rest_gpu_num - 1);
-        }
-
-        auto aw_panel = ctx.gpu_work.data() + ctx.n * ctx.nb;
-
-        if (z_panel_rows > 0) {
-            try {
-                matrix_ops::gemm(ctx.cublas_handle, z_panel_rows, ctx.b,
-                                 panel_m, (T)1, oriA_panel, lda, true,
-                                 ctx.gpu_work.data(), panel_m, false, (T)0,
-                                 aw_panel, z_panel_rows);
-            } catch (const std::exception& e) {
-                throw std::runtime_error(
-                    fmt::format("here aw gemm error exception: {}", e.what()));
-            } catch (...) {
-                throw std::runtime_error(
-                    "here aw gemm error: an unknown exception "
-                    "occurred");
+            auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
+            matrix_ops::gemm(ctx.cublas_handle, panel_m, ctx.b, panel_m, (T)1,
+                             oriA_panel, lda, false, panel_W_ptr, ldw, false,
+                             (T)0, panel_Z_ptr, ldz);
+        } else {
+            if (ctx.mpi_config.rank == gpu_index) {
+                // copy W to workspace
+                auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
+                                   ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    panel_W_ptr, ldw, ctx.gpu_work.data(), panel_m, panel_m,
+                    ctx.b);
             }
-        }
 
-        std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
+            // 使用子通信组进行广播
+            auto& sub_comm = ctx.sub_comm_groups[gpu_index];
+            if (sub_comm != nullptr) {
+                // root进程在子通信组中的rank是0
+                ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_m,
+                          ctx.nccl_type, 0, sub_comm, ctx.stream);
+                cudaStreamSynchronize(ctx.stream);
+            }
 
-        // 使用子通信组进行Send/Recv
-        if (sub_comm != nullptr) {
-            ncclGroupStart();
-            if (rank != gpu_index) {
-                // 在子通信组中，目标进程的rank是0
-                ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
-                         ctx.nccl_type, 0, sub_comm, ctx.stream);
-            } else {
-                for (auto gpu_offset = 1; gpu_offset < rest_gpu_num;
-                     gpu_offset++) {
-                    z_recv[gpu_offset - 1].resize(ctx.cols_per_process * ctx.b);
-                    // 在子通信组中，源进程的rank是 gpu_offset
-                    ncclRecv(z_recv[gpu_offset - 1].data().get(),
-                             ctx.cols_per_process * ctx.b, ctx.nccl_type,
-                             gpu_offset, sub_comm, ctx.stream);
+            auto oriA_panel =
+                ctx.gpu_oriA.data() + i + recrusive_offset_finished;
+            auto z_panel_rows = ctx.cols_per_process;
+
+            if (gpu_index == ctx.mpi_config.rank) {
+                oriA_panel = ctx.gpu_oriA.data() + recrusive_offset -
+                             ctx.start_col * ctx.n + i + i * lda;
+                z_panel_rows =
+                    panel_m - ctx.cols_per_process * (rest_gpu_num - 1);
+            }
+
+            auto aw_panel = ctx.gpu_work.data() + ctx.n * ctx.nb;
+
+            if (z_panel_rows > 0) {
+                try {
+                    matrix_ops::gemm(ctx.cublas_handle, z_panel_rows, ctx.b,
+                                     panel_m, (T)1, oriA_panel, lda, true,
+                                     ctx.gpu_work.data(), panel_m, false, (T)0,
+                                     aw_panel, z_panel_rows);
+                } catch (const std::exception& e) {
+                    throw std::runtime_error(fmt::format(
+                        "here aw gemm error exception: {}", e.what()));
+                } catch (...) {
+                    throw std::runtime_error(
+                        "here aw gemm error: an unknown exception "
+                        "occurred");
                 }
             }
-            ncclGroupEnd();
+
+            std::vector<thrust::device_vector<T>> z_recv(rest_gpu_num - 1);
+
+            // 使用子通信组进行Send/Recv
+            if (sub_comm != nullptr) {
+                ncclGroupStart();
+                if (rank != gpu_index) {
+                    // 在子通信组中，目标进程的rank是0
+                    ncclSend(aw_panel.get(), ctx.cols_per_process * ctx.b,
+                             ctx.nccl_type, 0, sub_comm, ctx.stream);
+                } else {
+                    for (auto gpu_offset = 1; gpu_offset < rest_gpu_num;
+                         gpu_offset++) {
+                        z_recv[gpu_offset - 1].resize(ctx.cols_per_process *
+                                                      ctx.b);
+                        // 在子通信组中，源进程的rank是 gpu_offset
+                        ncclRecv(z_recv[gpu_offset - 1].data().get(),
+                                 ctx.cols_per_process * ctx.b, ctx.nccl_type,
+                                 gpu_offset, sub_comm, ctx.stream);
+                    }
+                }
+                ncclGroupEnd();
+            }
+
+            cudaStreamSynchronize(ctx.stream);
+
+            if (rank == gpu_index) {
+                auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
+                if (z_panel_rows > 0) {
+                    matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                            thrust::device_ptr<T>, T>(
+                        aw_panel, z_panel_rows, panel_Z_ptr, ldz, z_panel_rows,
+                        ctx.b);
+                }
+                for (auto index = 1; index < rest_gpu_num; index++) {
+                    auto row_finished = (index - 1) * ctx.cols_per_process +
+                                        panel_m - ctx.cols_per_process *
+                                                       (rest_gpu_num - 1);
+                    matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                            thrust::device_ptr<T>, T>(
+                        z_recv[index - 1].data(), ctx.cols_per_process,
+                        panel_Z_ptr + row_finished, ldz,
+                        ctx.cols_per_process, ctx.b);
+                }
+            }
+
+            MPI_Barrier(comm);
+        }
+        return;
+    }
+
+    // BlockCyclic1D: 基于循环块按 bs 大小分块处理并由块拥有者计算对应 Z 的行块
+    auto bs = ctx.block_size_bs;
+    size_t tail_start = recrusive_offset_finished + i;
+    size_t panel_rows = panel_m;  // = n - tail_start
+
+    // root 复制 W 到工作区并全员广播（使用主通信器，覆盖所有参与者）
+    if (ctx.mpi_config.rank == gpu_index) {
+        auto panel_W_ptr = ctx.ptrLocalRC(ctx.gpu_W, tail_start,
+                                          recrusive_offset_finished + i -
+                                              ctx.b);
+        matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
+                                T>(panel_W_ptr, ldw, ctx.gpu_work.data(),
+                                   panel_rows, panel_rows, ctx.b);
+    }
+
+    ncclBcast(ctx.gpu_work.data().get(), ctx.b * panel_rows, ctx.nccl_type,
+              gpu_index, ctx.nccl_comm, ctx.stream);
+    cudaStreamSynchronize(ctx.stream);
+
+    // 每个循环块独立计算并装配到 owner 的 Z 中
+    size_t num_blocks = (panel_rows + bs - 1) / bs;
+    for (size_t t = 0; t < num_blocks; ++t) {
+        size_t j0 = tail_start + t * bs;               // 该循环块的起始全局列
+        size_t w = std::min(bs, ctx.n - j0);           // 块宽
+        size_t owner = ctx.ownerOfCol(j0);             // 块拥有者（按循环块）
+        bool i_am_owner = (ctx.mpi_config.rank == static_cast<int>(owner));
+
+        // 拿到本地 A 子块起点（panel_rows x w），按列主序打包
+        thrust::device_ptr<T> A_block;
+        if (i_am_owner) {
+            // 注意行起点应为 tail_start，而不是 j0
+            A_block = ctx.ptrLocalRC(ctx.gpu_oriA, tail_start, j0);
+        }
+
+        // 计算 aw_block = A_block^T * W  => 尺寸 (w x b)，列主序，ld = w
+        thrust::device_ptr<T> aw_block = ctx.gpu_work.data() + ctx.n * ctx.nb;
+        if (i_am_owner) {
+            if (w > 0) {
+                matrix_ops::gemm(ctx.cublas_handle, w, ctx.b, panel_rows,
+                                 (T)1, A_block, lda, true, ctx.gpu_work.data(),
+                                 panel_rows, false, (T)0, aw_block, w);
+            }
+        }
+
+        // 非 owner 不计算，直接同步
+        cudaStreamSynchronize(ctx.stream);
+
+        // 把结果送到 panel owner（gpu_index）并由其写入 Z 相应行偏移
+        size_t row_offset = t * bs;  // 该块在 Z 中的起始行（按全局列顺序）
+        if (ctx.mpi_config.rank != gpu_index) {
+            if (i_am_owner && w > 0) {
+                ncclSend(aw_block.get(), w * ctx.b, ctx.nccl_type, gpu_index,
+                         ctx.nccl_comm, ctx.stream);
+            }
+        }
+
+        if (ctx.mpi_config.rank == gpu_index) {
+            // 在 owner 上：接收或直接使用本地计算的块，然后拷贝到 Z
+            thrust::device_vector<T> recv_buf;  // 按需分配
+            thrust::device_ptr<T> src_block = aw_block;
+            if (!i_am_owner) {
+                if (w > 0) {
+                    recv_buf.resize(w * ctx.b);
+                    ncclRecv(recv_buf.data().get(), w * ctx.b, ctx.nccl_type,
+                             static_cast<int>(owner), ctx.nccl_comm,
+                             ctx.stream);
+                    src_block = recv_buf.data();
+                }
+            }
+
+            auto panel_Z_ptr = ctx.ptrLocalRC(
+                ctx.gpu_Z, tail_start, recrusive_offset_finished + i - ctx.b);
+            if (w > 0) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    src_block, w, panel_Z_ptr + row_offset, ldz, w, ctx.b);
+            }
         }
 
         cudaStreamSynchronize(ctx.stream);
-
-        if (rank == gpu_index) {
-            auto panel_Z_ptr = ctx.gpu_Z.data() + i + (i - ctx.b) * ldz;
-            if (z_panel_rows > 0) {
-                matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                        thrust::device_ptr<T>, T>(
-                    aw_panel, z_panel_rows, panel_Z_ptr, ldz, z_panel_rows,
-                    ctx.b);
-            }
-            for (auto index = 1; index < rest_gpu_num; index++) {
-                auto row_finished = (index - 1) * ctx.cols_per_process +
-                                    panel_m -
-                                    ctx.cols_per_process * (rest_gpu_num - 1);
-                matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                        thrust::device_ptr<T>, T>(
-                    z_recv[index - 1].data(), ctx.cols_per_process,
-                    panel_Z_ptr + row_finished, ldz, ctx.cols_per_process,
-                    ctx.b);
-            }
-        }
-
         MPI_Barrier(comm);
     }
 }
@@ -430,7 +607,80 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
         ctx.computeProcessForColumn((recrusive_depth + 1) * ctx.nb);
     auto rest_gpu_num = ctx.mpi_config.size - gpu_index;
     auto sub_matrix_n = ctx.n - (recrusive_depth + 1) * ctx.nb;
-    auto comm = ctx.sub_mpi_comms[gpu_index];
+    MPI_Comm comm = (ctx.dist_type == DistributionType::BlockCyclic1D)
+                        ? MPI_COMM_WORLD
+                        : ctx.sub_mpi_comms[gpu_index];
+    auto tail_start = (recrusive_depth + 1) * ctx.nb;
+
+    // BlockCyclic1D: 采用循环块分配尾部更新，每个块的列由其拥有者本地更新
+    if (ctx.dist_type == DistributionType::BlockCyclic1D) {
+        // 1) 准备并广播 Y_tail 与 Z_tail（尺寸 sub_n x nb，按 ld=sub_n 打包）
+        auto sub_n = sub_matrix_n;
+        auto bs = ctx.block_size_bs;
+
+        thrust::device_ptr<T> y_bcast = ctx.gpu_work.data();
+        thrust::device_ptr<T> z_bcast = ctx.gpu_work.data() + ctx.n * ctx.nb;
+
+        if (ctx.mpi_config.rank == gpu_index) {
+            // 源在面板 owner 上：把 [row=tail_start: , col=panel_start] 打成连续
+            auto y_src = ctx.ptrLocalRC(ctx.gpu_Y, tail_start, tail_start - ctx.nb);
+            auto z_src = ctx.ptrLocalRC(ctx.gpu_Z, tail_start, tail_start - ctx.nb);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                y_src, ldy, y_bcast, sub_n, sub_n, ctx.nb);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                z_src, ldz, z_bcast, sub_n, sub_n, ctx.nb);
+        }
+
+        // 广播到所有进程
+        ncclBcast(y_bcast.get(), sub_n * ctx.nb, ctx.nccl_type, gpu_index,
+                  ctx.nccl_comm, ctx.stream);
+        ncclBcast(z_bcast.get(), sub_n * ctx.nb, ctx.nccl_type, gpu_index,
+                  ctx.nccl_comm, ctx.stream);
+        cudaStreamSynchronize(ctx.stream);
+
+        // 2) 遍历尾部按 bs 分块的列块，由块拥有者计算并就地更新 C(:,J)
+        size_t num_blocks = (sub_n + bs - 1) / bs;
+        for (size_t t = 0; t < num_blocks; ++t) {
+            size_t j0 = tail_start + t * bs;    // 全局列起点
+            size_t w = std::min(bs, ctx.n - j0);  // 块宽
+            size_t owner = ctx.ownerOfCol(j0);
+            bool i_am_owner = (ctx.mpi_config.rank == static_cast<int>(owner));
+
+            if (w == 0) continue;
+
+            if (i_am_owner) {
+                // 本地 C(:,J) 指针（在 oriA 中更新）和 A 镜像
+                auto c_block = ctx.ptrLocalRC(ctx.gpu_oriA, tail_start, j0);
+                auto a_block = ctx.ptrLocalRC(ctx.gpu_A, tail_start, j0);
+
+                // 选取 Y/J 和 Z/J 的行块（w x nb），并进行两个 GEMM 叠加
+                size_t row_off = j0 - tail_start;  // 在打包 y/z 中的行偏移
+                auto y_rows = y_bcast + row_off;   // (w x nb) with ld=sub_n
+                auto z_rows = z_bcast + row_off;   // (w x nb) with ld=sub_n
+
+                // C(:,J) -= Y * Z[J,:]^T
+                matrix_ops::gemm(ctx.cublas_handle, sub_n, w, ctx.nb, T(-1),
+                                 y_bcast, sub_n, false, z_rows, sub_n, true,
+                                 T(1), c_block, lda);
+                // C(:,J) -= Z * Y[J,:]^T
+                matrix_ops::gemm(ctx.cublas_handle, sub_n, w, ctx.nb, T(-1),
+                                 z_bcast, sub_n, false, y_rows, sub_n, true,
+                                 T(1), c_block, lda);
+
+                // 可选：保持 A 镜像一致（复制更新后的列块到 gpu_A）
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    c_block, lda, a_block, lda, sub_n, w);
+            }
+
+            cudaStreamSynchronize(ctx.stream);
+            MPI_Barrier(comm);
+        }
+
+        return;
+    }
     thrust::device_ptr<T> tail_matrix_ptr;
     if (ctx.mpi_config.rank == tail_gpu_start_index) {
         tail_matrix_ptr = ctx.gpu_oriA.data() + offset - ctx.start_col * ctx.n;
@@ -632,20 +882,33 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
     auto recrusive_offset = (ctx.nb + ctx.nb * ctx.n) * recursive_depth;
     auto gpu_index = ctx.computeProcessForColumn(recrusive_offset_finished);
 
-    if (ctx.mpi_config.rank < gpu_index) {
+    if (ctx.dist_type != DistributionType::BlockCyclic1D &&
+        ctx.mpi_config.rank < gpu_index) {
         return;
     }
 
-    auto& mpi_comm = ctx.sub_mpi_comms[gpu_index];
+    MPI_Comm mpi_comm = (ctx.dist_type == DistributionType::BlockCyclic1D)
+                            ? MPI_COMM_WORLD
+                            : ctx.sub_mpi_comms[gpu_index];
     auto& handle = ctx.cublas_handle;
     auto& cusolver_handle = ctx.cusolver_handle;
 
     thrust::device_ptr<T> A, W, Y, Z, R, work_ptr;
 
+    // 调试：进入递归同步一次，捕获前序非法访问
+    internal::debug_cuda_sync("enter sy2sb_recursive_mpi");
+
     if (ctx.mpi_config.rank == gpu_index) {
-        A = ctx.gpu_A.data() + recrusive_offset - ctx.start_col * ctx.n;
-        W = ctx.gpu_W.data() + recrusive_offset - ctx.start_col * ctx.n;
-        Y = ctx.gpu_Y.data() + recrusive_offset - ctx.start_col * ctx.n;
+        if (ctx.dist_type == DistributionType::Blockwise) {
+            A = ctx.gpu_A.data() + recrusive_offset - ctx.start_col * ctx.n;
+            W = ctx.gpu_W.data() + recrusive_offset - ctx.start_col * ctx.n;
+            Y = ctx.gpu_Y.data() + recrusive_offset - ctx.start_col * ctx.n;
+        } else {
+            // block-cyclic: A/W/Y 直接使用映射在循环中计算的 panel 指针
+            A = nullptr;
+            W = nullptr;
+            Y = nullptr;
+        }
         R = ctx.gpu_R.data() + recrusive_offset_finished;
         Z = ctx.gpu_Z.data();
         work_ptr = ctx.gpu_work.data();
@@ -661,24 +924,92 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
     // for-loop update with b panel
     for (auto i = ctx.b; i <= ctx.nb && i < ctx.n - recrusive_offset_finished;
          i += ctx.b) {
+        // 迭代开始时同步一次，便于定位上一轮留下的非法访问
+        if (ctx.dist_type == DistributionType::BlockCyclic1D) {
+            std::ostringstream oss;
+            oss << "enter iter depth=" << recursive_depth << " i=" << i
+                << " owner=" << gpu_index << " rank="
+                << ctx.mpi_config.rank;
+            internal::debug_cuda_sync(oss.str().c_str());
+        }
         thrust::device_ptr<T> panel_ptr, panel_W_ptr, panel_Y_ptr, panel_Z_ptr;
         auto panel_m = ctx.n - recrusive_offset_finished - i;
         auto panel_n = ctx.b;
-        panel_ptr = A + i + (i - ctx.b) * lda;
-        panel_W_ptr = W + i + (i - ctx.b) * ldw;
-        panel_Y_ptr = Y + i + (i - ctx.b) * ldy;
-        panel_Z_ptr = Z + i + (i - ctx.b) * ldz;
+        if (ctx.dist_type == DistributionType::Blockwise) {
+            panel_ptr = A + i + (i - ctx.b) * lda;
+            panel_W_ptr = W + i + (i - ctx.b) * ldw;
+            panel_Y_ptr = Y + i + (i - ctx.b) * ldy;
+            panel_Z_ptr = Z + i + (i - ctx.b) * ldz;
+        } else {
+            // block-cyclic: 仅在面板拥有者上计算面板指针
+            if (ctx.mpi_config.rank == gpu_index) {
+                panel_ptr = ctx.ptrLocalRC(
+                    ctx.gpu_A, recrusive_offset_finished + i,
+                    recrusive_offset_finished + i - ctx.b);
+                panel_W_ptr = ctx.ptrLocalRC(
+                    ctx.gpu_W, recrusive_offset_finished + i,
+                    recrusive_offset_finished + i - ctx.b);
+                panel_Y_ptr = ctx.ptrLocalRC(
+                    ctx.gpu_Y, recrusive_offset_finished + i,
+                    recrusive_offset_finished + i - ctx.b);
+                panel_Z_ptr = ctx.ptrLocalRC(
+                    ctx.gpu_Z, recrusive_offset_finished + i,
+                    recrusive_offset_finished + i - ctx.b);
+
+                // 校验面板所属与本地列索引
+                size_t panel_col = recrusive_offset_finished + i - ctx.b;
+                size_t owner = ctx.ownerOfCol(panel_col);
+                if (owner != gpu_index) {
+                    util::MpiLogger::error(
+                        "[cyclic] panel owner mismatch: depth={} i={} expect_owner={} calc_owner={} rank={}",
+                        recursive_depth, i, gpu_index, owner,
+                        ctx.mpi_config.rank);
+                }
+                size_t lc = ctx.localColIndex(panel_col);
+                if (lc >= ctx.local_cols) {
+                    util::MpiLogger::error(
+                        "[cyclic] localColIndex OOB: depth={} i={} lc={} local_cols={} rank={} col={}",
+                        recursive_depth, i, lc, ctx.local_cols,
+                        ctx.mpi_config.rank, panel_col);
+                }
+            }
+        }
+
+        internal::debug_cuda_sync("before panelQR");
 
         // process for this panel do the work
-        performPanelQrComputeWy<T>(ctx.mpi_config.rank, handle,
-                                   ctx.cusolver_handle, gpu_index, panel_m,
-                                   panel_n, panel_ptr, lda, R, ldr, panel_W_ptr,
-                                   ldw, panel_Y_ptr, ldy, mpi_comm);
+        try {
+            performPanelQrComputeWy<T>(ctx.mpi_config.rank, handle,
+                                       ctx.cusolver_handle, gpu_index, panel_m,
+                                       panel_n, panel_ptr, lda, R, ldr,
+                                       panel_W_ptr, ldw, panel_Y_ptr, ldy,
+                                       mpi_comm);
+        } catch (const std::exception& e) {
+            util::MpiLogger::error(
+                "panelQR failed at depth={} i={} owner={} rank={} m={} n={} err={}",
+                recursive_depth, i, gpu_index, ctx.mpi_config.rank, panel_m,
+                panel_n, e.what());
+            debug_cuda_sync("panelQR");
+            throw;
+        }
+
+        internal::debug_cuda_sync("after panelQR");
 
         // compute AW distribution
-        performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
-                            panel_m, panel_n, i, lda, ldw, ldz,
-                            recrusive_offset, recrusive_offset_finished);
+        try {
+            performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
+                                panel_m, panel_n, i, lda, ldw, ldz,
+                                recrusive_offset, recrusive_offset_finished);
+        } catch (const std::exception& e) {
+            util::MpiLogger::error(
+                "performComputeAw failed at depth={} i={} owner={} rank={} m={} n={} err={}",
+                recursive_depth, i, gpu_index, ctx.mpi_config.rank, panel_m,
+                panel_n, e.what());
+            debug_cuda_sync("performComputeAw");
+            throw;
+        }
+
+        internal::debug_cuda_sync("after performComputeAw");
 
         // compute all b panel update
         if (ctx.mpi_config.rank == gpu_index) {
@@ -699,21 +1030,42 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
             } else {
                 try {
                     // panel_tmp = (Z + i)^T * panel_w
+                    auto Z_ip = (ctx.dist_type == DistributionType::Blockwise)
+                                    ? (Z + i)
+                                    : ctx.ptrLocalRC(ctx.gpu_Z,
+                                                     recrusive_offset_finished +
+                                                         i,
+                                                     recrusive_offset_finished +
+                                                         i);
+                    auto Y_ip = (ctx.dist_type == DistributionType::Blockwise)
+                                    ? (Y + i)
+                                    : ctx.ptrLocalRC(ctx.gpu_Y,
+                                                     recrusive_offset_finished +
+                                                         i,
+                                                     recrusive_offset_finished +
+                                                         i);
+                    auto A_dst = (ctx.dist_type == DistributionType::Blockwise)
+                                     ? (A + i + i * lda)
+                                     : ctx.ptrLocalRC(
+                                           ctx.gpu_A,
+                                           recrusive_offset_finished + i,
+                                           recrusive_offset_finished + i);
+
                     matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)1,
-                                     Z + i, ldz, true, panel_W_ptr, ldw, false,
+                                     Z_ip, ldz, true, panel_W_ptr, ldw, false,
                                      (T)0, work_ptr, ldwork);
                     // panel_z = panel_z - Y+i * panel_z^T * panel_w
-                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
-                                     Y + i, ldy, false, work_ptr, ldwork, false,
-                                     (T)1, panel_Z_ptr, ldz);
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b,
+                                     (T)(-1), Y_ip, ldy, false, work_ptr,
+                                     ldwork, false, (T)1, panel_Z_ptr, ldz);
                     // panel_tmp = Y+i^T * panel_w
-                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)(1),
-                                     Y + i, ldy, true, panel_W_ptr, ldw, false,
-                                     (T)0, work_ptr, ldwork);
+                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m,
+                                     (T)(1), Y_ip, ldy, true, panel_W_ptr, ldw,
+                                     false, (T)0, work_ptr, ldwork);
                     // panel_z = panel_z - (Z + i) * Y+i^T * panel_w
-                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
-                                     Z + i, ldz, false, work_ptr, ldwork, false,
-                                     (T)1, panel_Z_ptr, ldz);
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b,
+                                     (T)(-1), Z_ip, ldz, false, work_ptr,
+                                     ldwork, false, (T)1, panel_Z_ptr, ldz);
                     // panel_tmp = panel_w^T * panel_z
                     matrix_ops::gemm(handle, ctx.b, ctx.b, panel_m, (T)1,
                                      panel_W_ptr, ldw, true, panel_Z_ptr, ldz,
@@ -727,13 +1079,30 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
                 }
             }
             if (i < ctx.nb) {
-                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Y + i, ldy,
-                                 false, Z + i, ldz, true, (T)1, A + i + i * lda,
-                                 lda);
+                auto Z_ip = (ctx.dist_type == DistributionType::Blockwise)
+                                ? (Z + i)
+                                : ctx.ptrLocalRC(ctx.gpu_Z,
+                                                 recrusive_offset_finished + i,
+                                                 recrusive_offset_finished +
+                                                     i);
+                auto Y_ip = (ctx.dist_type == DistributionType::Blockwise)
+                                ? (Y + i)
+                                : ctx.ptrLocalRC(ctx.gpu_Y,
+                                                 recrusive_offset_finished + i,
+                                                 recrusive_offset_finished +
+                                                     i);
+                auto A_dst = (ctx.dist_type == DistributionType::Blockwise)
+                                 ? (A + i + i * lda)
+                                 : ctx.ptrLocalRC(ctx.gpu_A,
+                                                  recrusive_offset_finished + i,
+                                                  recrusive_offset_finished +
+                                                      i);
 
-                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Z + i, ldz,
-                                 false, Y + i, ldy, true, (T)1, A + i + i * lda,
-                                 lda);
+                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Y_ip, ldy,
+                                 false, Z_ip, ldz, true, (T)1, A_dst, lda);
+
+                matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Z_ip, ldz,
+                                 false, Y_ip, ldy, true, (T)1, A_dst, lda);
             }
         }
         MPI_Barrier(mpi_comm);
@@ -744,8 +1113,16 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         return;
     }
 
-    performInterRecursiveSyr2k(recursive_depth, ctx, gpu_index, A, lda, Y, ldy,
-                               Z, ldz);
+    try {
+        performInterRecursiveSyr2k(recursive_depth, ctx, gpu_index, A, lda, Y,
+                                   ldy, Z, ldz);
+    } catch (const std::exception& e) {
+        util::MpiLogger::error(
+            "performInterRecursiveSyr2k failed at depth={} owner={} rank={} err={}",
+            recursive_depth, gpu_index, ctx.mpi_config.rank, e.what());
+        debug_cuda_sync("performInterRecursiveSyr2k");
+        throw;
+    }
 
     // recursive call
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
@@ -766,6 +1143,24 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
 
     // 创建 MPI sy2sb 上下文
     MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
+
+    // 可通过环境变量切换分布策略：EVD_DIST=cyclic 使用 1D block-cyclic，默认 blockwise
+    if (const char* dist_env = std::getenv("EVD_DIST")) {
+        if (!std::strcmp(dist_env, "cyclic") || !std::strcmp(dist_env, "blockcyclic") ||
+            !std::strcmp(dist_env, "bc")) {
+            ctx.dist_type = DistributionType::BlockCyclic1D;
+            // block_size_bs 默认等于 nb
+        }
+    }
+
+    // 调试输出：确认当前分布模式和块大小（只在 rank 0 打印）
+    if (mpi_config.rank == 0) {
+        const char* mode = (ctx.dist_type == DistributionType::BlockCyclic1D)
+                               ? "cyclic"
+                               : "blockwise";
+        util::MpiLogger::println("[sy2sb] distribution={}, bs={}, nb={}, b={}",
+                                 mode, ctx.block_size_bs, nb, b);
+    }
 
     util::MpiLogger::tic("sy2sb mpi");
     // 调用递归实现

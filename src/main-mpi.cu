@@ -3,6 +3,7 @@
 #include <fmt/format.h>
 
 #include <cstddef>
+#include <cstdlib>
 
 #include "argh.h"
 #include "log.h"
@@ -21,6 +22,7 @@ int main(int argc, char** argv) {
                   "  -g, --gpu-num <num>    Number of GPUs (default: 2)\n"
                   "  -nb, --nb <size>       Block size for recursion (default: 64)\n"
                   "  -b, --b <size>         Panel size (default: 16)\n"
+                  "  --dist <mode>          Distribution: blockwise | cyclic (default: blockwise)\n"
                   "  -v, --verbose          Enable verbose output\n"
                   "  -t, --time             Enable timing output\n"
                   "  --validate             Enable result validation\n"
@@ -47,6 +49,18 @@ int main(int argc, char** argv) {
 
     auto b = (size_t)16;
     cmdl({"-b", "--b"}, 16) >> b;
+
+    // Optional distribution selection (propagated via env var understood by sy2sb)
+    std::string dist;
+    cmdl({"--dist"}, std::string()) >> dist;
+    if (!dist.empty()) {
+        // Normalize aliases
+        if (dist == "cyclic" || dist == "blockcyclic" || dist == "bc") {
+            setenv("EVD_DIST", "cyclic", 1);
+        } else if (dist == "blockwise" || dist == "bw") {
+            setenv("EVD_DIST", "blockwise", 1);
+        }
+    }
 
     // Initialize logger (will be used by all ranks, but main info printed only by rank 0)
     util::Logger::init(verbose);

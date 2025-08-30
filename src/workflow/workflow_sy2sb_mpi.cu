@@ -128,10 +128,22 @@ void run_workflow_sy2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     // TODO: Perform symmetric-to-band (sy2sb) reduction using MPI
 
-    // 广播矩阵数据到所有进程
-    MPI_Bcast(A_h.data(), n * n,
-              std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
-              MPI_COMM_WORLD);
+    // 广播矩阵数据到所有进程（大尺寸时分块广播，避免 MPI count 溢出）
+    {
+        using std::size_t;
+        const size_t total = n * n;  // 元素个数
+        const MPI_Datatype dtype =
+            std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE;
+        const int max_count = std::numeric_limits<int>::max();
+        size_t offset = 0;
+        while (offset < total) {
+            const size_t remain = total - offset;
+            const int chunk = static_cast<int>(
+                remain > static_cast<size_t>(max_count) ? max_count : remain);
+            MPI_Bcast(A_h.data() + offset, chunk, dtype, 0, MPI_COMM_WORLD);
+            offset += static_cast<size_t>(chunk);
+        }
+    }
 
     // 创建工作数组
     auto W_h = thrust::host_vector<T>(n * n, 0.0);
