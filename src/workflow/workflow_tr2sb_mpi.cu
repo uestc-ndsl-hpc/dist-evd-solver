@@ -1,7 +1,8 @@
 #include <cuda_runtime.h>
+#include <mkl.h>
 #include <mkl_lapacke.h>
 #include <mpi.h>
-#include <thrust/universal_vector.h>
+#include <thrust/host_vector.h>
 
 #include <cstddef>
 #include <thread>
@@ -40,7 +41,7 @@ void bc_back_parallal(
     matrix_ops::mpi::MpiConfig& mpi_config,
     matrix_ops::mpi::Sy2sbResultBuffers<T>& sy2sb_result_buffers,
     matrix_ops::mpi::Tr2sbBuffers<T>& tr2sbBuffer,
-    thrust::universal_vector<T>& U_h, bool debug, int rank) {
+    thrust::host_vector<T>& U_h, bool debug, int rank) {
     util::MpiLogger::tic("BC_Back");
     cudaSetDevice(rank);
     // 进行BC Back
@@ -101,7 +102,8 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         MPI_Win_shared_query(zwin, 0, &sz, &disp, &base);
         z_shm = static_cast<T*>(base);
     }
-    if (z_shm && shmrank == 0) {
+    // Each process needs to register the shared memory in its own CUDA context
+    if (z_shm) {
         cudaHostRegister(z_shm, (size_t)n * (size_t)n * sizeof(T),
                          cudaHostRegisterPortable);
     }
@@ -233,8 +235,6 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     matrix_ops::mpi::Sy2sbResultBuffers<T> sy2sb_result_buffers;
 
-    util::MpiLogger::tic("SBR+SBR Back");
-
     // 使用额外的作用域确保上下文在 MPI_Finalize() 之前析构
     {
         // 创建 MPI sy2sb 上下文
@@ -244,6 +244,8 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         util::MpiLogger::toc("sy2sb_mpi_context_creation");
 
         MPI_Barrier(MPI_COMM_WORLD);
+
+        util::MpiLogger::tic("SBR+SBR Back");
 
         // 执行 MPI sy2sb 算法
         util::MpiLogger::tic("sy2sb_mpi_computation");
@@ -318,9 +320,9 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     util::MpiLogger::toc("SBR+SBR Back");
 
-    thrust::universal_vector<T> S_h;
-    thrust::universal_vector<T> E_h;
-    thrust::universal_vector<T> subU_h;
+    thrust::host_vector<T> S_h;
+    thrust::host_vector<T> E_h;
+    thrust::host_vector<T> subU_h;
 
     if (rank == 0) {
         S_h.resize(n);
@@ -338,45 +340,45 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     {
         // 创建 MPI sb2tr 上下文
         util::MpiLogger::tic("sb2tr_mpi_context_creation");
-        matrix_ops::mpi::MpiSb2trContext<T> tr2sb_context(mpi_config,
+        matrix_ops::mpi::MpiSb2trContext<T> sb2tr_context(mpi_config,
                                                           sy2sb_result_buffers);
         util::MpiLogger::toc("sb2tr_mpi_context_creation");
 
         // 执行 MPI sb2tr 算法
         util::MpiLogger::tic("sb2tr_mpi_computation");
-        matrix_ops::mpi::sb2tr<T>(tr2sb_context);
+        matrix_ops::mpi::sb2tr<T>(sb2tr_context);
         util::MpiLogger::toc("sb2tr_mpi_computation");
 
         util::MpiLogger::tic("Gather_S&E_for_DC");
-        auto p_dSubA = thrust::device_pointer_cast(tr2sb_context.gpu_subA);
+        auto p_dSubA = thrust::device_pointer_cast(sb2tr_context.gpu_subA);
         auto p_S_h = thrust::raw_pointer_cast(S_h.data());
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
-            p_dSubA, tr2sb_context.ldSubA, p_S_h, (size_t)1, (size_t)1,
-            tr2sb_context.cols_cur_node_process);
+        // matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
+        //     p_dSubA, sb2tr_context.ldSubA, p_S_h, (size_t)1, (size_t)1,
+        //     sb2tr_context.cols_cur_node_process);
 
-        MPI_Gather(p_S_h, tr2sb_context.cols_cur_node_process,
+        MPI_Gather(p_S_h, sb2tr_context.cols_cur_node_process,
                    std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, p_S_h,
-                   tr2sb_context.cols_cur_node_process,
+                   sb2tr_context.cols_cur_node_process,
                    std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
                    MPI_COMM_WORLD);
 
-        p_dSubA = thrust::device_pointer_cast(tr2sb_context.gpu_subA + 1);
+        p_dSubA = thrust::device_pointer_cast(sb2tr_context.gpu_subA + 1);
         auto p_E_h = thrust::raw_pointer_cast(E_h.data());
-        matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
-            p_dSubA, tr2sb_context.ldSubA, p_E_h, (size_t)1, (size_t)1,
-            tr2sb_context.cols_cur_node_process);
+        // matrix_ops::matrix_copy<thrust::device_ptr<T>, T*, T>(
+        //     p_dSubA, sb2tr_context.ldSubA, p_E_h, (size_t)1, (size_t)1,
+        //     sb2tr_context.cols_cur_node_process);
 
-        MPI_Gather(p_E_h, tr2sb_context.cols_cur_node_process,
+        MPI_Gather(p_E_h, sb2tr_context.cols_cur_node_process,
                    std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, p_E_h,
-                   tr2sb_context.cols_cur_node_process,
+                   sb2tr_context.cols_cur_node_process,
                    std::is_same_v<T, float> ? MPI_FLOAT : MPI_DOUBLE, 0,
                    MPI_COMM_WORLD);
         util::MpiLogger::toc("Gather_S&E_for_DC");
 
         util::MpiLogger::tic("Gather_U_for_BC_Back");
         auto p_subU_h = thrust::raw_pointer_cast(subU_h.data());
-        auto p_gpu_U = thrust::raw_pointer_cast(tr2sb_context.gpu_U.data());
-        cudaMemcpy(p_subU_h, p_gpu_U, tr2sb_context.ldU * n,
+        auto p_gpu_U = thrust::raw_pointer_cast(sb2tr_context.gpu_U.data());
+        cudaMemcpy(p_subU_h, p_gpu_U, sb2tr_context.ldU * n,
                    cudaMemcpyDeviceToHost);
         util::MpiLogger::toc("Gather_U_for_BC_Back");
     }
@@ -391,11 +393,15 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             T* E = thrust::raw_pointer_cast(E_h.data());
             // 直接写入 z_shm（行主序，ld = n）
             util::MpiLogger::tic("LAPACKE_MKL_DC");
-            // if constexpr (std::is_same_v<T, double>) {
-            //     LAPACKE_dstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
-            // } else {
-            //     LAPACKE_sstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
-            // }
+            mkl_set_dynamic(0);
+            mkl_set_num_threads_local(128 - num_gpus);
+            util::MpiLogger::println("MKL max threads = {}",
+                                     mkl_get_max_threads());
+            if constexpr (std::is_same_v<T, double>) {
+                LAPACKE_dstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
+            } else {
+                LAPACKE_sstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
+            }
             util::MpiLogger::toc("LAPACKE_MKL_DC");
             // 保证对共享段的写入可见
             MPI_Win_sync(zwin);
@@ -422,29 +428,91 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
     auto finalQ = thrust::device_vector<T>(n / total_gpus * n);
     util::MpiLogger::tic("FinalGEMM");
     {
-        auto gpu_Z = thrust::device_vector<T>(n / total_gpus * n);
+        // Ping-pong buffers for overlapping copy and compute
+        auto gpu_Z_ping = thrust::device_vector<T>(n / total_gpus * n);
+        auto gpu_Z_pong = thrust::device_vector<T>(n / total_gpus * n);
         auto& gpu_QT = tr2sbBuffers.Q;
         common::CublasHandle handle;
 
         auto gpu_Q_ptr = gpu_QT.data();
 
-        for (size_t i = 0; i < total_gpus; ++i) {
-            auto cpy_name = fmt::format("FinalGEMM copy {}", i);
-            auto gemm_name = fmt::format("FinalGEMM gemm {}", i);
-            auto z_shm_ptr = z_shm + i * n * n / total_gpus;
+        // CUDA streams for ping-pong
+        cudaStream_t stream_copy, stream_compute;
+        cudaStreamCreate(&stream_copy);
+        cudaStreamCreate(&stream_compute);
 
-            util::MpiLogger::tic(cpy_name);
-            thrust::copy(z_shm_ptr, z_shm_ptr + n * n / total_gpus,
-                         gpu_Z.data());
-            util::MpiLogger::toc(cpy_name);
+        // CUDA events for dependency tracking
+        cudaEvent_t event_ping_ready, event_pong_ready;
+        cudaEventCreate(&event_ping_ready);
+        cudaEventCreate(&event_pong_ready);
 
-            util::MpiLogger::tic(gemm_name);
-            matrix_ops::gemm(
-                handle, n / total_gpus, n / total_gpus, n, T(1.0), gpu_Z.data(),
-                n / total_gpus, gpu_Q_ptr, n, T(0.0),
-                finalQ.data() + i * n / total_gpus, n);
-            util::MpiLogger::toc(gemm_name);
+        // Set cuBLAS stream for compute operations
+        cublasSetStream(handle.get(), stream_compute);
+
+        // Pre-load first chunk into ping buffer
+        if (total_gpus > 0) {
+            auto z_shm_ptr = z_shm;
+            util::MpiLogger::tic("FinalGEMM copy 0");
+            cudaMemcpyAsync(thrust::raw_pointer_cast(gpu_Z_ping.data()),
+                            z_shm_ptr, n * n / total_gpus * sizeof(T),
+                            cudaMemcpyHostToDevice, stream_copy);
+            // Record event when ping buffer is ready
+            cudaEventRecord(event_ping_ready, stream_copy);
+            util::MpiLogger::toc("FinalGEMM copy 0");
         }
+
+        for (size_t i = 0; i < total_gpus; ++i) {
+            auto gemm_name = fmt::format("FinalGEMM gemm {}", i);
+
+            // Determine which buffer to use for current computation
+            auto current_Z_ptr =
+                (i % 2 == 0) ? gpu_Z_ping.data() : gpu_Z_pong.data();
+            auto next_Z_ptr =
+                (i % 2 == 0) ? gpu_Z_pong.data() : gpu_Z_ping.data();
+
+            // Determine which event to wait for current buffer
+            cudaEvent_t current_event =
+                (i % 2 == 0) ? event_ping_ready : event_pong_ready;
+            cudaEvent_t next_event =
+                (i % 2 == 0) ? event_pong_ready : event_ping_ready;
+
+            // Make compute stream wait for current buffer to be ready
+            cudaStreamWaitEvent(stream_compute, current_event, 0);
+
+            // Start next data transfer (if not last iteration)
+            if (i + 1 < total_gpus) {
+                auto next_cpy_name = fmt::format("FinalGEMM copy {}", i + 1);
+                auto next_z_shm_ptr = z_shm + (i + 1) * n * n / total_gpus;
+
+                util::MpiLogger::tic(next_cpy_name);
+                cudaMemcpyAsync(thrust::raw_pointer_cast(next_Z_ptr),
+                                next_z_shm_ptr, n * n / total_gpus * sizeof(T),
+                                cudaMemcpyHostToDevice, stream_copy);
+                // Record event when next buffer is ready
+                cudaEventRecord(next_event, stream_copy);
+                util::MpiLogger::toc(next_cpy_name);
+            }
+
+            // Perform GEMM computation (this will use stream_compute)
+            util::MpiLogger::tic(gemm_name);
+            matrix_ops::gemm(handle, n / total_gpus, n / total_gpus, n, T(1.0),
+                             current_Z_ptr, n / total_gpus, gpu_Q_ptr, n,
+                             T(0.0), finalQ.data() + i * n / total_gpus, n);
+            util::MpiLogger::toc(gemm_name);
+
+            // No need to synchronize here - let next iteration handle
+            // dependencies
+        }
+
+        // Wait for all operations to complete before cleanup
+        cudaStreamSynchronize(stream_compute);
+        cudaStreamSynchronize(stream_copy);
+
+        // Cleanup events and streams
+        cudaEventDestroy(event_ping_ready);
+        cudaEventDestroy(event_pong_ready);
+        cudaStreamDestroy(stream_copy);
+        cudaStreamDestroy(stream_compute);
     }
     util::MpiLogger::toc("FinalGEMM");
 

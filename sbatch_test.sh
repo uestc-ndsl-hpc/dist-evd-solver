@@ -7,7 +7,7 @@
 #SBATCH --partition=gpu7           # 指定分区
 #SBATCH --account=$(whoami)        # 指定账户（通常可以省略，系统会自动识别）
 #SBATCH --ntasks=2                 # 请求 2 个任务
-#SBATCH --cpus-per-task=8          # 每个任务请求 8 个 CPU核心
+#SBATCH --cpus-per-task=32          # 每个任务请求 8 个 CPU核心
 #SBATCH --mem-per-cpu=8000M        # 每个 CPU 核心请求 8000 MB 内存
 #SBATCH --gpus=a800:2              # 请求 2 块 a800 GPU
 #SBATCH --time=1-00:00:0           # 运行时长上限（1天）
@@ -29,7 +29,7 @@ fi
 
 export OMPI_MCA_hwloc_base_binding_policy=none
 
-mpirun build/dist-evd-solver-mpi --double -n=$1 -b=32 -nb=1024 -v > log/1.txt
+mpirun build/dist-evd-solver-mpi --double -n=$1 -b=32 -nb=1024 -v > log/a800_2_$1.txt
 
 echo "=========================================="
 echo "Job finished on $(date)"

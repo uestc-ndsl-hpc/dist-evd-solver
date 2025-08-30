@@ -17,7 +17,7 @@ template <typename T>
 MpiTr2sbGenQContext<T>::MpiTr2sbGenQContext(const MpiConfig& config,
                                             Sy2sbResultBuffers<T>& buffers,
                                             Tr2sbBuffers<T>& tr2sbBuffer,
-                                            thrust::universal_vector<T>& U_h)
+                                            thrust::host_vector<T>& U_h)
     : mpi_config(config),
       n(buffers.n),
       U(std::move(U_h)),

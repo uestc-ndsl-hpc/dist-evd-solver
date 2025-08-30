@@ -96,9 +96,9 @@ MpiSb2trContext<T>::~MpiSb2trContext() {
         stream = nullptr;
     }
 
-    nvshmem_free(prePEWriteCom);
-    nvshmem_free(nextPEWriteTailSweepProcRow);
-    nvshmem_free(gpu_subA);
+    // nvshmem_free(prePEWriteCom);
+    // nvshmem_free(nextPEWriteTailSweepProcRow);
+    // nvshmem_free(gpu_subA);
 
     // 销毁NVShmem环境
     // nvshmem_finalize();

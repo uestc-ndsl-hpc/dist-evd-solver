@@ -21,15 +21,13 @@ include(FetchContent)
 # 1. 声明 fmt 库
 FetchContent_Declare(
     fmt
-    GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-    GIT_TAG 11.2.0
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/fmt-11.1.2
 )
 
 # 2. 声明 argh 库
 FetchContent_Declare(
     argh
-    GIT_REPOSITORY https://github.com/adishavit/argh.git
-    GIT_TAG v1.3.2
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/argh-1.3.2
 )
 
 # 3. 声明 googletest 库

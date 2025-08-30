@@ -3,7 +3,7 @@
 #include <mpi.h>
 #include <nccl.h>
 #include <thrust/device_vector.h>
-#include <thrust/universal_vector.h>
+#include <thrust/host_vector.h>
 
 #include <cstddef>
 
@@ -246,13 +246,13 @@ class MpiTr2sbGenQContext {
     cudaStream_t stream;
 
     // GPU 显存信息
-    thrust::universal_vector<T> U;
+    thrust::host_vector<T> U;
     size_t ldU;
 
-    thrust::universal_vector<T> subU;
+    thrust::host_vector<T> subU;
     size_t ldSubU;
 
-    thrust::universal_vector<T> subU_rev;
+    thrust::host_vector<T> subU_rev;
     thrust::device_vector<T> gpu_subU;
 
     thrust::device_vector<T> gpu_Q;
@@ -260,7 +260,7 @@ class MpiTr2sbGenQContext {
 
     MpiTr2sbGenQContext(const MpiConfig& config, Sy2sbResultBuffers<T>& buffers,
                         Tr2sbBuffers<T>& tr2sbBuffer,
-                        thrust::universal_vector<T>& U_h);
+                        thrust::host_vector<T>& U_h);
 
     ~MpiTr2sbGenQContext();
 
