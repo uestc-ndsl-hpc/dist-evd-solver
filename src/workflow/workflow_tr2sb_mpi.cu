@@ -346,7 +346,7 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
         // 执行 MPI sb2tr 算法
         util::MpiLogger::tic("sb2tr_mpi_computation");
-        matrix_ops::mpi::sb2tr<T>(sb2tr_context);
+        // matrix_ops::mpi::sb2tr<T>(sb2tr_context);
         util::MpiLogger::toc("sb2tr_mpi_computation");
 
         util::MpiLogger::tic("Gather_S&E_for_DC");
@@ -397,11 +397,11 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             mkl_set_num_threads_local(128 - num_gpus);
             util::MpiLogger::println("MKL max threads = {}",
                                      mkl_get_max_threads());
-            if constexpr (std::is_same_v<T, double>) {
-                LAPACKE_dstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
-            } else {
-                LAPACKE_sstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
-            }
+            // if constexpr (std::is_same_v<T, double>) {
+            //     LAPACKE_dstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
+            // } else {
+            //     LAPACKE_sstedc(LAPACK_ROW_MAJOR, 'I', n, S, E, z_shm, n);
+            // }
             util::MpiLogger::toc("LAPACKE_MKL_DC");
             // 保证对共享段的写入可见
             MPI_Win_sync(zwin);
@@ -410,16 +410,16 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         MPI_Barrier(shmcomm);
     }
 
-    if (rank == 0) {
-        std::thread back_thread(bc_back_parallal<T>, std::ref(mpi_config),
-                                std::ref(sy2sb_result_buffers),
-                                std::ref(tr2sbBuffers), std::ref(subU_h), debug,
-                                rank);
-        back_thread.join();
-    } else {
-        bc_back_parallal<T>(mpi_config, sy2sb_result_buffers, tr2sbBuffers,
-                            subU_h, debug, rank);
-    }
+    // if (rank == 0) {
+    //     std::thread back_thread(bc_back_parallal<T>, std::ref(mpi_config),
+    //                             std::ref(sy2sb_result_buffers),
+    //                             std::ref(tr2sbBuffers), std::ref(subU_h), debug,
+    //                             rank);
+    //     back_thread.join();
+    // } else {
+    //     bc_back_parallal<T>(mpi_config, sy2sb_result_buffers, tr2sbBuffers,
+    //                         subU_h, debug, rank);
+    // }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
