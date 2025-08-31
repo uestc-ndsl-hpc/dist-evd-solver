@@ -1,15 +1,15 @@
+#include <cuda_runtime.h>
 #include <mpi.h>
 #include <nccl.h>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
-#include <cstddef>
-#include <stdexcept>
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <cuda_runtime.h>
 #include <sstream>
+#include <stdexcept>
 
 #include "fmt/format.h"
 #include "log.h"
@@ -45,7 +45,8 @@ MpiSy2sbContext<T>::MpiSy2sbContext(const MpiConfig& config, size_t matrix_n,
     block_size_bs = nb;  // block-cyclic 缺省使用 nb
     if (const char* dist_env = std::getenv("EVD_DIST")) {
         if (!std::strcmp(dist_env, "cyclic") ||
-            !std::strcmp(dist_env, "blockcyclic") || !std::strcmp(dist_env, "bc")) {
+            !std::strcmp(dist_env, "blockcyclic") ||
+            !std::strcmp(dist_env, "bc")) {
             dist_type = DistributionType::BlockCyclic1D;
         }
     }
@@ -336,10 +337,10 @@ static inline void debug_cuda_sync(const char* where);
 
 // 定义：调试用 CUDA 同步打印（放在相同命名空间内，避免链接问题）
 static inline void debug_cuda_sync(const char* where) {
+    return;  // 目前禁用
     cudaError_t err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {
-        util::MpiLogger::error("[CUDA] {}: {}", where,
-                               cudaGetErrorString(err));
+        util::MpiLogger::error("[CUDA] {}: {}", where, cudaGetErrorString(err));
     }
 }
 
@@ -417,7 +418,8 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
             if (ctx.mpi_config.rank == gpu_index) {
                 // copy W to workspace
                 auto panel_W_ptr = ctx.gpu_W.data() + recrusive_offset -
-                                   ctx.start_col * ctx.n + i + (i - ctx.b) * ldw;
+                                   ctx.start_col * ctx.n + i +
+                                   (i - ctx.b) * ldw;
                 matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                         thrust::device_ptr<T>, T>(
                     panel_W_ptr, ldw, ctx.gpu_work.data(), panel_m, panel_m,
@@ -496,14 +498,14 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
                         ctx.b);
                 }
                 for (auto index = 1; index < rest_gpu_num; index++) {
-                    auto row_finished = (index - 1) * ctx.cols_per_process +
-                                        panel_m - ctx.cols_per_process *
-                                                       (rest_gpu_num - 1);
+                    auto row_finished =
+                        (index - 1) * ctx.cols_per_process + panel_m -
+                        ctx.cols_per_process * (rest_gpu_num - 1);
                     matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                             thrust::device_ptr<T>, T>(
                         z_recv[index - 1].data(), ctx.cols_per_process,
-                        panel_Z_ptr + row_finished, ldz,
-                        ctx.cols_per_process, ctx.b);
+                        panel_Z_ptr + row_finished, ldz, ctx.cols_per_process,
+                        ctx.b);
                 }
             }
 
@@ -519,9 +521,8 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
 
     // root 复制 W 到工作区并全员广播（使用主通信器，覆盖所有参与者）
     if (ctx.mpi_config.rank == gpu_index) {
-        auto panel_W_ptr = ctx.ptrLocalRC(ctx.gpu_W, tail_start,
-                                          recrusive_offset_finished + i -
-                                              ctx.b);
+        auto panel_W_ptr = ctx.ptrLocalRC(
+            ctx.gpu_W, tail_start, recrusive_offset_finished + i - ctx.b);
         matrix_ops::matrix_copy<thrust::device_ptr<T>, thrust::device_ptr<T>,
                                 T>(panel_W_ptr, ldw, ctx.gpu_work.data(),
                                    panel_rows, panel_rows, ctx.b);
@@ -534,9 +535,9 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
     // 每个循环块独立计算并装配到 owner 的 Z 中
     size_t num_blocks = (panel_rows + bs - 1) / bs;
     for (size_t t = 0; t < num_blocks; ++t) {
-        size_t j0 = tail_start + t * bs;               // 该循环块的起始全局列
-        size_t w = std::min(bs, ctx.n - j0);           // 块宽
-        size_t owner = ctx.ownerOfCol(j0);             // 块拥有者（按循环块）
+        size_t j0 = tail_start + t * bs;      // 该循环块的起始全局列
+        size_t w = std::min(bs, ctx.n - j0);  // 块宽
+        size_t owner = ctx.ownerOfCol(j0);    // 块拥有者（按循环块）
         bool i_am_owner = (ctx.mpi_config.rank == static_cast<int>(owner));
 
         // 拿到本地 A 子块起点（panel_rows x w），按列主序打包
@@ -550,8 +551,8 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
         thrust::device_ptr<T> aw_block = ctx.gpu_work.data() + ctx.n * ctx.nb;
         if (i_am_owner) {
             if (w > 0) {
-                matrix_ops::gemm(ctx.cublas_handle, w, ctx.b, panel_rows,
-                                 (T)1, A_block, lda, true, ctx.gpu_work.data(),
+                matrix_ops::gemm(ctx.cublas_handle, w, ctx.b, panel_rows, (T)1,
+                                 A_block, lda, true, ctx.gpu_work.data(),
                                  panel_rows, false, (T)0, aw_block, w);
             }
         }
@@ -622,9 +623,12 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
         thrust::device_ptr<T> z_bcast = ctx.gpu_work.data() + ctx.n * ctx.nb;
 
         if (ctx.mpi_config.rank == gpu_index) {
-            // 源在面板 owner 上：把 [row=tail_start: , col=panel_start] 打成连续
-            auto y_src = ctx.ptrLocalRC(ctx.gpu_Y, tail_start, tail_start - ctx.nb);
-            auto z_src = ctx.ptrLocalRC(ctx.gpu_Z, tail_start, tail_start - ctx.nb);
+            // 源在面板 owner 上：把 [row=tail_start: , col=panel_start]
+            // 打成连续
+            auto y_src =
+                ctx.ptrLocalRC(ctx.gpu_Y, tail_start, tail_start - ctx.nb);
+            auto z_src =
+                ctx.ptrLocalRC(ctx.gpu_Z, tail_start, tail_start - ctx.nb);
             matrix_ops::matrix_copy<thrust::device_ptr<T>,
                                     thrust::device_ptr<T>, T>(
                 y_src, ldy, y_bcast, sub_n, sub_n, ctx.nb);
@@ -643,7 +647,7 @@ void performInterRecursiveSyr2k(size_t recrusive_depth,
         // 2) 遍历尾部按 bs 分块的列块，由块拥有者计算并就地更新 C(:,J)
         size_t num_blocks = (sub_n + bs - 1) / bs;
         for (size_t t = 0; t < num_blocks; ++t) {
-            size_t j0 = tail_start + t * bs;    // 全局列起点
+            size_t j0 = tail_start + t * bs;      // 全局列起点
             size_t w = std::min(bs, ctx.n - j0);  // 块宽
             size_t owner = ctx.ownerOfCol(j0);
             bool i_am_owner = (ctx.mpi_config.rank == static_cast<int>(owner));
@@ -928,8 +932,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         if (ctx.dist_type == DistributionType::BlockCyclic1D) {
             std::ostringstream oss;
             oss << "enter iter depth=" << recursive_depth << " i=" << i
-                << " owner=" << gpu_index << " rank="
-                << ctx.mpi_config.rank;
+                << " owner=" << gpu_index << " rank=" << ctx.mpi_config.rank;
             internal::debug_cuda_sync(oss.str().c_str());
         }
         thrust::device_ptr<T> panel_ptr, panel_W_ptr, panel_Y_ptr, panel_Z_ptr;
@@ -943,32 +946,34 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         } else {
             // block-cyclic: 仅在面板拥有者上计算面板指针
             if (ctx.mpi_config.rank == gpu_index) {
-                panel_ptr = ctx.ptrLocalRC(
-                    ctx.gpu_A, recrusive_offset_finished + i,
-                    recrusive_offset_finished + i - ctx.b);
-                panel_W_ptr = ctx.ptrLocalRC(
-                    ctx.gpu_W, recrusive_offset_finished + i,
-                    recrusive_offset_finished + i - ctx.b);
-                panel_Y_ptr = ctx.ptrLocalRC(
-                    ctx.gpu_Y, recrusive_offset_finished + i,
-                    recrusive_offset_finished + i - ctx.b);
-                panel_Z_ptr = ctx.ptrLocalRC(
-                    ctx.gpu_Z, recrusive_offset_finished + i,
-                    recrusive_offset_finished + i - ctx.b);
+                panel_ptr =
+                    ctx.ptrLocalRC(ctx.gpu_A, recrusive_offset_finished + i,
+                                   recrusive_offset_finished + i - ctx.b);
+                panel_W_ptr =
+                    ctx.ptrLocalRC(ctx.gpu_W, recrusive_offset_finished + i,
+                                   recrusive_offset_finished + i - ctx.b);
+                panel_Y_ptr =
+                    ctx.ptrLocalRC(ctx.gpu_Y, recrusive_offset_finished + i,
+                                   recrusive_offset_finished + i - ctx.b);
+                panel_Z_ptr =
+                    ctx.ptrLocalRC(ctx.gpu_Z, recrusive_offset_finished + i,
+                                   recrusive_offset_finished + i - ctx.b);
 
                 // 校验面板所属与本地列索引
                 size_t panel_col = recrusive_offset_finished + i - ctx.b;
                 size_t owner = ctx.ownerOfCol(panel_col);
                 if (owner != gpu_index) {
                     util::MpiLogger::error(
-                        "[cyclic] panel owner mismatch: depth={} i={} expect_owner={} calc_owner={} rank={}",
+                        "[cyclic] panel owner mismatch: depth={} i={} "
+                        "expect_owner={} calc_owner={} rank={}",
                         recursive_depth, i, gpu_index, owner,
                         ctx.mpi_config.rank);
                 }
                 size_t lc = ctx.localColIndex(panel_col);
                 if (lc >= ctx.local_cols) {
                     util::MpiLogger::error(
-                        "[cyclic] localColIndex OOB: depth={} i={} lc={} local_cols={} rank={} col={}",
+                        "[cyclic] localColIndex OOB: depth={} i={} lc={} "
+                        "local_cols={} rank={} col={}",
                         recursive_depth, i, lc, ctx.local_cols,
                         ctx.mpi_config.rank, panel_col);
                 }
@@ -978,23 +983,28 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         internal::debug_cuda_sync("before panelQR");
 
         // process for this panel do the work
+        auto panelqr = fmt::format("panelqr {} {}", i / ctx.b, recursive_depth);
+        util::MpiLogger::tic(panelqr);
         try {
-            performPanelQrComputeWy<T>(ctx.mpi_config.rank, handle,
-                                       ctx.cusolver_handle, gpu_index, panel_m,
-                                       panel_n, panel_ptr, lda, R, ldr,
-                                       panel_W_ptr, ldw, panel_Y_ptr, ldy,
-                                       mpi_comm);
+            performPanelQrComputeWy<T>(
+                ctx.mpi_config.rank, handle, ctx.cusolver_handle, gpu_index,
+                panel_m, panel_n, panel_ptr, lda, R, ldr, panel_W_ptr, ldw,
+                panel_Y_ptr, ldy, mpi_comm);
         } catch (const std::exception& e) {
             util::MpiLogger::error(
-                "panelQR failed at depth={} i={} owner={} rank={} m={} n={} err={}",
+                "panelQR failed at depth={} i={} owner={} rank={} m={} n={} "
+                "err={}",
                 recursive_depth, i, gpu_index, ctx.mpi_config.rank, panel_m,
                 panel_n, e.what());
             debug_cuda_sync("panelQR");
             throw;
         }
+        util::MpiLogger::toc(panelqr);
 
         internal::debug_cuda_sync("after panelQR");
 
+        auto aw = fmt::format("computeAw {} {}", i / ctx.b, recursive_depth);
+        util::MpiLogger::tic(aw);
         // compute AW distribution
         try {
             performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
@@ -1002,15 +1012,20 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
                                 recrusive_offset, recrusive_offset_finished);
         } catch (const std::exception& e) {
             util::MpiLogger::error(
-                "performComputeAw failed at depth={} i={} owner={} rank={} m={} n={} err={}",
+                "performComputeAw failed at depth={} i={} owner={} rank={} "
+                "m={} n={} err={}",
                 recursive_depth, i, gpu_index, ctx.mpi_config.rank, panel_m,
                 panel_n, e.what());
             debug_cuda_sync("performComputeAw");
             throw;
         }
+        util::MpiLogger::toc(aw);
 
         internal::debug_cuda_sync("after performComputeAw");
 
+        auto updategemm =
+            fmt::format("update gemm {} {}", i / ctx.b, recursive_depth);
+        util::MpiLogger::tic(updategemm);
         // compute all b panel update
         if (ctx.mpi_config.rank == gpu_index) {
             if (i == ctx.b) {
@@ -1030,42 +1045,40 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
             } else {
                 try {
                     // panel_tmp = (Z + i)^T * panel_w
-                    auto Z_ip = (ctx.dist_type == DistributionType::Blockwise)
-                                    ? (Z + i)
-                                    : ctx.ptrLocalRC(ctx.gpu_Z,
-                                                     recrusive_offset_finished +
-                                                         i,
-                                                     recrusive_offset_finished +
-                                                         i);
-                    auto Y_ip = (ctx.dist_type == DistributionType::Blockwise)
-                                    ? (Y + i)
-                                    : ctx.ptrLocalRC(ctx.gpu_Y,
-                                                     recrusive_offset_finished +
-                                                         i,
-                                                     recrusive_offset_finished +
-                                                         i);
-                    auto A_dst = (ctx.dist_type == DistributionType::Blockwise)
-                                     ? (A + i + i * lda)
-                                     : ctx.ptrLocalRC(
-                                           ctx.gpu_A,
-                                           recrusive_offset_finished + i,
-                                           recrusive_offset_finished + i);
+                    auto Z_ip =
+                        (ctx.dist_type == DistributionType::Blockwise)
+                            ? (Z + i)
+                            : ctx.ptrLocalRC(ctx.gpu_Z,
+                                             recrusive_offset_finished + i,
+                                             recrusive_offset_finished + i);
+                    auto Y_ip =
+                        (ctx.dist_type == DistributionType::Blockwise)
+                            ? (Y + i)
+                            : ctx.ptrLocalRC(ctx.gpu_Y,
+                                             recrusive_offset_finished + i,
+                                             recrusive_offset_finished + i);
+                    auto A_dst =
+                        (ctx.dist_type == DistributionType::Blockwise)
+                            ? (A + i + i * lda)
+                            : ctx.ptrLocalRC(ctx.gpu_A,
+                                             recrusive_offset_finished + i,
+                                             recrusive_offset_finished + i);
 
                     matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)1,
                                      Z_ip, ldz, true, panel_W_ptr, ldw, false,
                                      (T)0, work_ptr, ldwork);
                     // panel_z = panel_z - Y+i * panel_z^T * panel_w
-                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b,
-                                     (T)(-1), Y_ip, ldy, false, work_ptr,
-                                     ldwork, false, (T)1, panel_Z_ptr, ldz);
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
+                                     Y_ip, ldy, false, work_ptr, ldwork, false,
+                                     (T)1, panel_Z_ptr, ldz);
                     // panel_tmp = Y+i^T * panel_w
-                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m,
-                                     (T)(1), Y_ip, ldy, true, panel_W_ptr, ldw,
-                                     false, (T)0, work_ptr, ldwork);
+                    matrix_ops::gemm(handle, i - ctx.b, ctx.b, panel_m, (T)(1),
+                                     Y_ip, ldy, true, panel_W_ptr, ldw, false,
+                                     (T)0, work_ptr, ldwork);
                     // panel_z = panel_z - (Z + i) * Y+i^T * panel_w
-                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b,
-                                     (T)(-1), Z_ip, ldz, false, work_ptr,
-                                     ldwork, false, (T)1, panel_Z_ptr, ldz);
+                    matrix_ops::gemm(handle, panel_m, ctx.b, i - ctx.b, (T)(-1),
+                                     Z_ip, ldz, false, work_ptr, ldwork, false,
+                                     (T)1, panel_Z_ptr, ldz);
                     // panel_tmp = panel_w^T * panel_z
                     matrix_ops::gemm(handle, ctx.b, ctx.b, panel_m, (T)1,
                                      panel_W_ptr, ldw, true, panel_Z_ptr, ldz,
@@ -1083,20 +1096,17 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
                                 ? (Z + i)
                                 : ctx.ptrLocalRC(ctx.gpu_Z,
                                                  recrusive_offset_finished + i,
-                                                 recrusive_offset_finished +
-                                                     i);
+                                                 recrusive_offset_finished + i);
                 auto Y_ip = (ctx.dist_type == DistributionType::Blockwise)
                                 ? (Y + i)
                                 : ctx.ptrLocalRC(ctx.gpu_Y,
                                                  recrusive_offset_finished + i,
-                                                 recrusive_offset_finished +
-                                                     i);
+                                                 recrusive_offset_finished + i);
                 auto A_dst = (ctx.dist_type == DistributionType::Blockwise)
                                  ? (A + i + i * lda)
-                                 : ctx.ptrLocalRC(ctx.gpu_A,
-                                                  recrusive_offset_finished + i,
-                                                  recrusive_offset_finished +
-                                                      i);
+                                 : ctx.ptrLocalRC(
+                                       ctx.gpu_A, recrusive_offset_finished + i,
+                                       recrusive_offset_finished + i);
 
                 matrix_ops::gemm(handle, panel_m, ctx.b, i, (T)(-1), Y_ip, ldy,
                                  false, Z_ip, ldz, true, (T)1, A_dst, lda);
@@ -1106,6 +1116,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
             }
         }
         MPI_Barrier(mpi_comm);
+        util::MpiLogger::toc(updategemm);
     }
 
     // recursive quit
@@ -1113,12 +1124,14 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         return;
     }
 
+    auto syr2k = fmt::format("syr2k {}", recursive_depth);
     try {
         performInterRecursiveSyr2k(recursive_depth, ctx, gpu_index, A, lda, Y,
                                    ldy, Z, ldz);
     } catch (const std::exception& e) {
         util::MpiLogger::error(
-            "performInterRecursiveSyr2k failed at depth={} owner={} rank={} err={}",
+            "performInterRecursiveSyr2k failed at depth={} owner={} rank={} "
+            "err={}",
             recursive_depth, gpu_index, ctx.mpi_config.rank, e.what());
         debug_cuda_sync("performInterRecursiveSyr2k");
         throw;
@@ -1144,9 +1157,11 @@ void sy2sb(const MpiConfig& mpi_config, size_t n, T* A, size_t lda, T* W,
     // 创建 MPI sy2sb 上下文
     MpiSy2sbContext<T> ctx(mpi_config, n, A, lda, W, ldw, Y, ldy, nb, b);
 
-    // 可通过环境变量切换分布策略：EVD_DIST=cyclic 使用 1D block-cyclic，默认 blockwise
+    // 可通过环境变量切换分布策略：EVD_DIST=cyclic 使用 1D block-cyclic，默认
+    // blockwise
     if (const char* dist_env = std::getenv("EVD_DIST")) {
-        if (!std::strcmp(dist_env, "cyclic") || !std::strcmp(dist_env, "blockcyclic") ||
+        if (!std::strcmp(dist_env, "cyclic") ||
+            !std::strcmp(dist_env, "blockcyclic") ||
             !std::strcmp(dist_env, "bc")) {
             ctx.dist_type = DistributionType::BlockCyclic1D;
             // block_size_bs 默认等于 nb
