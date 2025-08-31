@@ -461,7 +461,13 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             util::MpiLogger::toc("FinalGEMM copy 0");
         }
 
-        for (size_t i = 0; i < total_gpus; ++i) {
+        // Dimensions for block GEMM: C_block (m x n) = A_block (m x k_sub) * Z (k_sub x n)
+        const size_t m_block = n / total_gpus;  // rows owned by this rank
+        const size_t n_cols = n;                // full number of columns
+        const size_t k_sub = n / total_gpus;    // k chunk per iteration
+        const size_t ldQ = tr2sbBuffers.ldQ;    // leading dimension of Q (column-major)
+
+        for (size_t i = 0; i < (size_t)total_gpus; ++i) {
             auto gemm_name = fmt::format("FinalGEMM gemm {}", i);
 
             // Determine which buffer to use for current computation
@@ -480,7 +486,7 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
             cudaStreamWaitEvent(stream_compute, current_event, 0);
 
             // Start next data transfer (if not last iteration)
-            if (i + 1 < total_gpus) {
+            if (i + 1 < (size_t)total_gpus) {
                 auto next_cpy_name = fmt::format("FinalGEMM copy {}", i + 1);
                 auto next_z_shm_ptr = z_shm + (i + 1) * n * n / total_gpus;
 
@@ -493,15 +499,21 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
                 util::MpiLogger::toc(next_cpy_name);
             }
 
+            // Submatrix of Q for current k-range (columns i*k_sub : (i+1)*k_sub-1)
+            auto A_sub_ptr = gpu_Q_ptr + (i * k_sub) * ldQ;
+
             // Perform GEMM computation (this will use stream_compute)
+            // Note: Z is produced in row-major on host. We treat the copied chunk as
+            // a column-major alias of shape (n x k_sub) and set transB=true so B^T gives (k_sub x n).
+            // Accumulate over k-sub chunks: beta=0 for i==0, else 1.
             util::MpiLogger::tic(gemm_name);
-            matrix_ops::gemm(handle, n / total_gpus, n / total_gpus, n, T(1.0),
-                             current_Z_ptr, n / total_gpus, gpu_Q_ptr, n,
-                             T(0.0), finalQ.data() + i * n / total_gpus, n);
+            matrix_ops::gemm(handle, m_block, n_cols, k_sub, T(1.0),
+                             A_sub_ptr, ldQ, false, current_Z_ptr, n, true,
+                             (i == 0) ? T(0.0) : T(1.0), finalQ.data(),
+                             m_block);
             util::MpiLogger::toc(gemm_name);
 
-            // No need to synchronize here - let next iteration handle
-            // dependencies
+            // No need to synchronize here - let next iteration handle dependencies
         }
 
         // Wait for all operations to complete before cleanup
