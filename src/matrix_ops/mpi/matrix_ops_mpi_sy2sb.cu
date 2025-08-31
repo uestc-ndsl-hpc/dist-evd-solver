@@ -1125,6 +1125,8 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
     }
 
     auto syr2k = fmt::format("syr2k {}", recursive_depth);
+    
+    util::MpiLogger::tic(syr2k);
     try {
         performInterRecursiveSyr2k(recursive_depth, ctx, gpu_index, A, lda, Y,
                                    ldy, Z, ldz);
@@ -1136,6 +1138,7 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         debug_cuda_sync("performInterRecursiveSyr2k");
         throw;
     }
+    util::MpiLogger::toc(syr2k);
 
     // recursive call
     sy2sb_recursive_mpi(recursive_depth + 1, ctx);
