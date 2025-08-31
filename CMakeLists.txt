@@ -95,6 +95,7 @@ target_link_libraries(dist-evd-solver-lib
         MPI::MPI_CXX
         argh
         MKL::MKL
+        nvidia-ml
 )
 
 # 为库目标设置分离编译
