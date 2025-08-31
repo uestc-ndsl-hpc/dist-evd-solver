@@ -423,9 +423,11 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    tr2sbBuffers.ldQ = n;
+    // Q produced by BC-back uses leading dimension n + 2*U_LEN_PROC_1TIME
+    tr2sbBuffers.ldQ = n + 2 * U_LEN_PROC_1TIME;
 
-    auto finalQ = thrust::device_vector<T>(n / total_gpus * n);
+    // Each rank owns n/size rows of Q and produces same rows of finalQ
+    auto finalQ = thrust::device_vector<T>(n / size * n);
     util::MpiLogger::tic("FinalGEMM");
     {
         // Ping-pong buffers for overlapping copy and compute
@@ -462,7 +464,7 @@ void run_workflow_tr2sb_mpi(size_t n, bool validate, int num_gpus, size_t nb,
         }
 
         // Dimensions for block GEMM: C_block (m x n) = A_block (m x k_sub) * Z (k_sub x n)
-        const size_t m_block = n / total_gpus;  // rows owned by this rank
+        const size_t m_block = n / size;        // rows owned by this rank
         const size_t n_cols = n;                // full number of columns
         const size_t k_sub = n / total_gpus;    // k chunk per iteration
         const size_t ldQ = tr2sbBuffers.ldQ;    // leading dimension of Q (column-major)
