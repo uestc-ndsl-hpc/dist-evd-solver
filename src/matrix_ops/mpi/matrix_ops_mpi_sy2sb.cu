@@ -532,69 +532,142 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
               gpu_index, ctx.nccl_comm, ctx.stream);
     cudaStreamSynchronize(ctx.stream);
 
-    // 每个循环块独立计算并装配到 owner 的 Z 中
-    size_t num_blocks = (panel_rows + bs - 1) / bs;
-    for (size_t t = 0; t < num_blocks; ++t) {
-        size_t j0 = tail_start + t * bs;      // 该循环块的起始全局列
-        size_t w = std::min(bs, ctx.n - j0);  // 块宽
-        size_t owner = ctx.ownerOfCol(j0);    // 块拥有者（按循环块）
-        bool i_am_owner = (ctx.mpi_config.rank == static_cast<int>(owner));
+    // 每个 rank 执行一次大 GEMM：A_tail_local^T * W，然后由 owner 汇总装配
+    auto P = static_cast<size_t>(ctx.mpi_config.size);
+    auto rrank = static_cast<size_t>(ctx.mpi_config.rank);
 
-        // 拿到本地 A 子块起点（panel_rows x w），按列主序打包
-        thrust::device_ptr<T> A_block;
-        if (i_am_owner) {
-            // 注意行起点应为 tail_start，而不是 j0
-            A_block = ctx.ptrLocalRC(ctx.gpu_oriA, tail_start, j0);
+    size_t blk0 = tail_start / bs;
+    size_t off0 = tail_start % bs;
+    size_t owner0 = blk0 % P;
+    size_t first_blk_owned = (owner0 == rrank)
+                                 ? blk0
+                                 : (blk0 + ((rrank + P - owner0) % P));
+    size_t j_first_owned = (first_blk_owned * bs >= ctx.n)
+                               ? ctx.n
+                               : (first_blk_owned == blk0 ? blk0 * bs + off0
+                                                          : first_blk_owned * bs);
+
+    // 统计本地尾部拥有列数
+    size_t local_tail_cols = 0;
+    if (j_first_owned < ctx.n) {
+        size_t w0 = std::min(bs - (j_first_owned % bs), ctx.n - j_first_owned);
+        local_tail_cols += w0;
+        for (size_t bb = first_blk_owned + P; bb * bs < ctx.n; bb += P) {
+            size_t j0 = bb * bs;
+            size_t w = std::min(bs, ctx.n - j0);
+            local_tail_cols += w;
         }
+    }
 
-        // 计算 aw_block = A_block^T * W  => 尺寸 (w x b)，列主序，ld = w
-        thrust::device_ptr<T> aw_block = ctx.gpu_work.data() + ctx.n * ctx.nb;
-        if (i_am_owner) {
-            if (w > 0) {
-                matrix_ops::gemm(ctx.cublas_handle, w, ctx.b, panel_rows, (T)1,
-                                 A_block, lda, true, ctx.gpu_work.data(),
-                                 panel_rows, false, (T)0, aw_block, w);
-            }
+    // 本地 GEMM 输出缓冲
+    thrust::device_ptr<T> aw_panel = ctx.gpu_work.data() + ctx.n * ctx.nb;
+    if (local_tail_cols > 0) {
+        auto A_tail_ptr = ctx.ptrLocalRC(ctx.gpu_oriA, tail_start, j_first_owned);
+        matrix_ops::gemm(ctx.cublas_handle, local_tail_cols, ctx.b, panel_rows,
+                         (T)1, A_tail_ptr, lda, true, ctx.gpu_work.data(),
+                         panel_rows, false, (T)0, aw_panel, local_tail_cols);
+    }
+
+    if (ctx.mpi_config.rank != gpu_index) {
+        if (local_tail_cols > 0) {
+            ncclSend(aw_panel.get(), local_tail_cols * ctx.b, ctx.nccl_type,
+                     gpu_index, ctx.nccl_comm, ctx.stream);
         }
-
-        // 非 owner 不计算，直接同步
-        cudaStreamSynchronize(ctx.stream);
-
-        // 把结果送到 panel owner（gpu_index）并由其写入 Z 相应行偏移
-        size_t row_offset = t * bs;  // 该块在 Z 中的起始行（按全局列顺序）
-        if (ctx.mpi_config.rank != gpu_index) {
-            if (i_am_owner && w > 0) {
-                ncclSend(aw_block.get(), w * ctx.b, ctx.nccl_type, gpu_index,
-                         ctx.nccl_comm, ctx.stream);
-            }
-        }
-
-        if (ctx.mpi_config.rank == gpu_index) {
-            // 在 owner 上：接收或直接使用本地计算的块，然后拷贝到 Z
-            thrust::device_vector<T> recv_buf;  // 按需分配
-            thrust::device_ptr<T> src_block = aw_block;
-            if (!i_am_owner) {
-                if (w > 0) {
-                    recv_buf.resize(w * ctx.b);
-                    ncclRecv(recv_buf.data().get(), w * ctx.b, ctx.nccl_type,
-                             static_cast<int>(owner), ctx.nccl_comm,
-                             ctx.stream);
-                    src_block = recv_buf.data();
-                }
-            }
-
-            auto panel_Z_ptr = ctx.ptrLocalRC(
-                ctx.gpu_Z, tail_start, recrusive_offset_finished + i - ctx.b);
-            if (w > 0) {
-                matrix_ops::matrix_copy<thrust::device_ptr<T>,
-                                        thrust::device_ptr<T>, T>(
-                    src_block, w, panel_Z_ptr + row_offset, ldz, w, ctx.b);
-            }
-        }
-
         cudaStreamSynchronize(ctx.stream);
         MPI_Barrier(comm);
+        return;
     }
+
+    // owner：接收其他 rank 的结果并装配
+    std::vector<size_t> recv_counts(P, 0);
+    for (size_t rr = 0; rr < P; ++rr) {
+        size_t fb = (owner0 == rr) ? blk0 : (blk0 + ((rr + P - owner0) % P));
+        if (fb * bs >= ctx.n) {
+            recv_counts[rr] = 0;
+            continue;
+        }
+        size_t jfirst = (fb == blk0) ? (fb * bs + off0) : (fb * bs);
+        size_t cnt = 0;
+        size_t w0 = std::min(bs - (jfirst % bs), ctx.n - jfirst);
+        cnt += w0;
+        for (size_t bb = fb + P; bb * bs < ctx.n; bb += P) {
+            size_t j0 = bb * bs;
+            size_t w = std::min(bs, ctx.n - j0);
+            cnt += w;
+        }
+        recv_counts[rr] = cnt;
+    }
+
+    std::vector<thrust::device_vector<T>> recv_bufs(P);
+    ncclGroupStart();
+    for (size_t rr = 0; rr < P; ++rr) {
+        if (rr == static_cast<size_t>(gpu_index)) continue;
+        if (recv_counts[rr] == 0) continue;
+        recv_bufs[rr].resize(recv_counts[rr] * ctx.b);
+        ncclRecv(recv_bufs[rr].data().get(), recv_counts[rr] * ctx.b,
+                 ctx.nccl_type, static_cast<int>(rr), ctx.nccl_comm,
+                 ctx.stream);
+    }
+    ncclGroupEnd();
+    cudaStreamSynchronize(ctx.stream);
+
+    auto panel_Z_ptr = ctx.ptrLocalRC(
+        ctx.gpu_Z, tail_start, recrusive_offset_finished + i - ctx.b);
+
+    // 先装配自身结果
+    if (local_tail_cols > 0) {
+        size_t src_off = 0;
+        if (first_blk_owned * bs < ctx.n) {
+            size_t jstart = j_first_owned;
+            size_t w0 = std::min(bs - (jstart % bs), ctx.n - jstart);
+            if (w0 > 0) {
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    aw_panel + src_off, local_tail_cols,
+                    panel_Z_ptr + (jstart - tail_start), ldz, w0, ctx.b);
+                src_off += w0;
+            }
+            for (size_t bb = first_blk_owned + P; bb * bs < ctx.n; bb += P) {
+                size_t j0 = bb * bs;
+                size_t w = std::min(bs, ctx.n - j0);
+                matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                        thrust::device_ptr<T>, T>(
+                    aw_panel + src_off, local_tail_cols,
+                    panel_Z_ptr + (j0 - tail_start), ldz, w, ctx.b);
+                src_off += w;
+            }
+        }
+    }
+
+    // 其他 rank 结果装配
+    for (size_t rr = 0; rr < P; ++rr) {
+        if (rr == static_cast<size_t>(gpu_index)) continue;
+        size_t cnt = recv_counts[rr];
+        if (cnt == 0) continue;
+        size_t fb = (owner0 == rr) ? blk0 : (blk0 + ((rr + P - owner0) % P));
+        size_t jfirst = (fb == blk0) ? (fb * bs + off0) : (fb * bs);
+        size_t src_off = 0;
+        size_t w0 = std::min(bs - (jfirst % bs), ctx.n - jfirst);
+        if (w0 > 0) {
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                recv_bufs[rr].data(), cnt,
+                panel_Z_ptr + (jfirst - tail_start), ldz, w0, ctx.b);
+            src_off += w0;
+        }
+        for (size_t bb = fb + P; bb * bs < ctx.n; bb += P) {
+            size_t j0 = bb * bs;
+            size_t w = std::min(bs, ctx.n - j0);
+            matrix_ops::matrix_copy<thrust::device_ptr<T>,
+                                    thrust::device_ptr<T>, T>(
+                recv_bufs[rr].data() + src_off, cnt,
+                panel_Z_ptr + (j0 - tail_start), ldz, w, ctx.b);
+            src_off += w;
+        }
+    }
+
+    cudaStreamSynchronize(ctx.stream);
+    MPI_Barrier(comm);
 }
 
 template <typename T>
