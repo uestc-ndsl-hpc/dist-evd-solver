@@ -99,31 +99,47 @@ __global__ void tsqr_kernel(int m, int n, T* A, int lda, T* R, int ldr) {
             T norm_x_square = warp_all_reduce_sum(nu);
             T norm_x = sqrt(norm_x_square);
 
-            T scale = 1.0 / norm_x;
+            constexpr T epsilon = std::is_same<T, double>::value ? 1e-12 : 1e-7;
+
+            if (norm_x > epsilon) {
+                T scale = 1.0 / norm_x;
 #pragma unroll
-            for (int k = 0; k < TSQR_NUM_DATA_ROW; k++) {
-                int row_idx = thread_idx_x + k * TSQR_BLOCK_DIM_X;
-                if (row_idx >= cols && row_idx < block_size) {
-                    q[k] *= scale;
+                for (int k = 0; k < TSQR_NUM_DATA_ROW; k++) {
+                    int row_idx = thread_idx_x + k * TSQR_BLOCK_DIM_X;
+                    if (row_idx >= cols && row_idx < block_size) {
+                        q[k] *= scale;
+                    }
                 }
-            }
 
-            int thread_idx = cols % TSQR_BLOCK_DIM_X;
-            int thread_off = cols / TSQR_BLOCK_DIM_X;
-            T u1 = 0;
-            if (thread_idx_x == thread_idx) {
-                q[thread_off] += (q[thread_off] >= 0) ? 1 : -1;
-                u1 = q[thread_off];
-                R[cols + cols * ldr] = (u1 >= 0) ? -norm_x : norm_x;
-            }
-            u1 = __shfl_sync(0xFFFFFFFF, u1, thread_idx);
+                int thread_idx = cols % TSQR_BLOCK_DIM_X;
+                int thread_off = cols / TSQR_BLOCK_DIM_X;
+                T u1 = 0;
+                if (thread_idx_x == thread_idx) {
+                    q[thread_off] += (q[thread_off] >= 0) ? 1.0 : -1.0;
+                    u1 = q[thread_off];
+                    R[cols + cols * ldr] = (u1 >= 0) ? -norm_x : norm_x;
+                }
+                u1 = __shfl_sync(0xFFFFFFFF, u1, thread_idx);
 
-            scale = 1.0 / (sqrt(abs(u1)));
+                scale = 1.0 / (sqrt(abs(u1)));
 #pragma unroll
-            for (int k = 0; k < TSQR_NUM_DATA_ROW; k++) {
-                int row_idx = thread_idx_x + k * TSQR_BLOCK_DIM_X;
-                if (row_idx >= cols && row_idx < block_size) {
-                    shared_A[row_idx + cols * ldsa] = q[k] * scale;
+                for (int k = 0; k < TSQR_NUM_DATA_ROW; k++) {
+                    int row_idx = thread_idx_x + k * TSQR_BLOCK_DIM_X;
+                    if (row_idx >= cols && row_idx < block_size) {
+                        shared_A[row_idx + cols * ldsa] = q[k] * scale;
+                    }
+                }
+            } else {
+                int thread_idx = cols % TSQR_BLOCK_DIM_X;
+                if (thread_idx_x == thread_idx) {
+                    R[cols + cols * ldr] = 0.0;
+                }
+#pragma unroll
+                for (int k = 0; k < TSQR_NUM_DATA_ROW; k++) {
+                    int row_idx = thread_idx_x + k * TSQR_BLOCK_DIM_X;
+                    if (row_idx >= cols && row_idx < block_size) {
+                        shared_A[row_idx + cols * ldsa] = 0.0;
+                    }
                 }
             }
         }

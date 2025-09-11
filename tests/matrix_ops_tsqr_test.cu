@@ -81,6 +81,12 @@ class TsqrTest : public ::testing::Test {
                 h_A_original[i] =
                     static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
             }
+            for(size_t i = 0; i < m; ++i) {
+                h_A_original[i + 2 * m] = (T)0;
+            }
+            for(size_t i = 0; i < n; ++i) {
+                h_A_original[2 + i * m] = (T)0;
+            }
         }
 
         // Copy to device
