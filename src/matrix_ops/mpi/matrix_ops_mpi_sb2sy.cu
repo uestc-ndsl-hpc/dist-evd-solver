@@ -85,24 +85,23 @@ void MpiSb2syGenQContext<T>::initializeQMatrix() {
     auto local_q_cols = q_cols[mpi_config.rank];
     auto local_n = n;  // capture n as a plain value for device lambda
 
-    thrust::for_each(
-        thrust::make_counting_iterator<size_t>(0),
-        thrust::make_counting_iterator<size_t>(local_q_cols * ldQ),
-        [=] __device__(size_t idx) {
-            auto row = idx % ldQ;
-            auto col = idx / ldQ;
-            // 检查边界：确保不访问超出矩阵范围的内存
-            if (row < local_n && col < local_q_cols) {
-                if (local_base_offset + col == row) {
-                    gpu_Q_ptr[idx] = static_cast<T>(1.0);
-                } else {
-                    gpu_Q_ptr[idx] = static_cast<T>(0.0);
-                }
-            } else {
-                // 对于超出矩阵范围的填充区域，设置为0
-                gpu_Q_ptr[idx] = static_cast<T>(0.0);
-            }
-        });
+    thrust::for_each(thrust::make_counting_iterator<size_t>(0),
+                     thrust::make_counting_iterator<size_t>(local_q_cols * ldQ),
+                     [=] __device__(size_t idx) {
+                         auto row = idx % ldQ;
+                         auto col = idx / ldQ;
+                         // 检查边界：确保不访问超出矩阵范围的内存
+                         if (row < local_n && col < local_q_cols) {
+                             if (local_base_offset + col == row) {
+                                 gpu_Q_ptr[idx] = static_cast<T>(1.0);
+                             } else {
+                                 gpu_Q_ptr[idx] = static_cast<T>(0.0);
+                             }
+                         } else {
+                             // 对于超出矩阵范围的填充区域，设置为0
+                             gpu_Q_ptr[idx] = static_cast<T>(0.0);
+                         }
+                     });
 }
 
 template <typename T>
@@ -191,19 +190,56 @@ void sb2syGenQ(MpiSb2syGenQContext<T>& ctx) {
     }
 
     for (auto col_wk = b; col_wk < nk; col_wk *= 2) {
-        cublasGemmStridedBatchedEx(
-            ctx.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N, col_wk, col_wk, m - b,
-            &done, Y.get() + b, cuda_type, ldY, 2 * col_wk * ldY,
-            W.get() + b + col_wk * ldW, cuda_type, ldW, 2 * col_wk * ldW,
-            &dzero, work.get(), cuda_type, m, 2 * col_wk * m, nk / (2 * col_wk),
-            compute_type, CUBLAS_GEMM_DEFAULT);
+        auto full_pairs = nk / (2 * col_wk);
+        if (full_pairs > 0) {
+            cublasGemmStridedBatchedEx(
+                ctx.cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                static_cast<int>(col_wk), static_cast<int>(col_wk),
+                static_cast<int>(m - b), &done, Y.get() + b, cuda_type,
+                static_cast<int>(ldY), static_cast<long long>(2 * col_wk * ldY),
+                W.get() + b + col_wk * ldW, cuda_type, static_cast<int>(ldW),
+                static_cast<long long>(2 * col_wk * ldW), &dzero, work.get(),
+                cuda_type, static_cast<int>(m),
+                static_cast<long long>(2 * col_wk * m),
+                static_cast<int>(full_pairs), compute_type,
+                CUBLAS_GEMM_DEFAULT);
 
-        cublasGemmStridedBatchedEx(
-            ctx.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N, m - b, col_wk, col_wk,
-            &dnegone, W.get() + b, cuda_type, ldW, 2 * col_wk * ldW, work.get(),
-            cuda_type, m, 2 * col_wk * m, &done, W.get() + b + col_wk * ldW,
-            cuda_type, ldW, 2 * col_wk * ldW, nk / (2 * col_wk), compute_type,
-            CUBLAS_GEMM_DEFAULT);
+            cublasGemmStridedBatchedEx(
+                ctx.cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+                static_cast<int>(m - b), static_cast<int>(col_wk),
+                static_cast<int>(col_wk), &dnegone, W.get() + b, cuda_type,
+                static_cast<int>(ldW), static_cast<long long>(2 * col_wk * ldW),
+                work.get(), cuda_type, static_cast<int>(m),
+                static_cast<long long>(2 * col_wk * m), &done,
+                W.get() + b + col_wk * ldW, cuda_type, static_cast<int>(ldW),
+                static_cast<long long>(2 * col_wk * ldW),
+                static_cast<int>(full_pairs), compute_type,
+                CUBLAS_GEMM_DEFAULT);
+        }
+
+        auto paired_cols = full_pairs * 2 * col_wk;
+        auto rem = nk - paired_cols;
+        auto right_w = rem > col_wk ? rem - col_wk : 0;
+
+        if (right_w > 0) {
+            auto W_left = W + b + paired_cols * ldW;  // (m-b) x col_wk
+            auto W_right =
+                W + b + (paired_cols + col_wk) * ldW;  // (m-b) x right_w
+            auto Y_panel = Y + b;                      // (m-b) x col_wk
+            auto work_tail = work;  // col_wk x right_w (紧凑 ldc=col_wk)
+
+            matrix_ops::gemm(ctx.cublas_handle, static_cast<size_t>(col_wk),
+                             static_cast<size_t>(right_w),
+                             static_cast<size_t>(m - b), done, Y_panel, ldY,
+                             true, W_right, ldW, false, dzero, work_tail,
+                             col_wk);
+
+            matrix_ops::gemm(ctx.cublas_handle, static_cast<size_t>(m - b),
+                             static_cast<size_t>(right_w),
+                             static_cast<size_t>(col_wk), dnegone, W_left, ldW,
+                             false, work_tail, col_wk, false, done, W_right,
+                             ldW);
+        }
     }
 
     util::MpiLogger::toc("sb2syGenW");
