@@ -567,7 +567,7 @@ void performComputeAw(matrix_ops::mpi::MpiSy2sbContext<T>& ctx, MPI_Comm& comm,
                                  aw_panel, z_panel_rows);
             } catch (const std::exception& e) {
                 throw std::runtime_error(
-                    fmt::format("here aw gemm error exception: {}", e.what()));
+                    fmt::format("here aw gemm error exception: {} mpi rank: {}", e.what(), rank));
             } catch (...) {
                 throw std::runtime_error(
                     "here aw gemm error: an unknown exception "
@@ -873,16 +873,26 @@ void sy2sb_recursive_mpi(size_t recursive_depth,
         panel_Y_ptr = Y + i + (i - ctx.b) * ldy;
         panel_Z_ptr = Z + i + (i - ctx.b) * ldz;
 
-        // process for this panel do the work
-        performPanelQrComputeWy<T>(ctx.mpi_config.rank, handle,
-                                   ctx.cusolver_handle, gpu_index, panel_m,
-                                   panel_n, panel_ptr, lda, R, ldr, panel_W_ptr,
-                                   ldw, panel_Y_ptr, ldy, mpi_comm);
+        try {
+            // process for this panel do the work
+            performPanelQrComputeWy<T>(
+                ctx.mpi_config.rank, handle, ctx.cusolver_handle, gpu_index,
+                panel_m, panel_n, panel_ptr, lda, R, ldr, panel_W_ptr, ldw,
+                panel_Y_ptr, ldy, mpi_comm);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(fmt::format(
+                "Error during panel QR decomposition in sy2sb: {}", e.what()));
+        }
 
         // compute AW distribution
-        performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
-                            panel_m, panel_n, i, lda, ldw, ldz,
-                            recrusive_offset, recrusive_offset_finished);
+        try {
+            performComputeAw<T>(ctx, mpi_comm, ctx.mpi_config.rank, gpu_index,
+                                panel_m, panel_n, i, lda, ldw, ldz,
+                                recrusive_offset, recrusive_offset_finished);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(fmt::format(
+                "Error during AW distribution in sy2sb: {}", e.what()));
+        }
 
         // compute all b panel update
         if (ctx.mpi_config.rank == gpu_index) {

@@ -27,7 +27,55 @@ void gemm(const common::CublasHandle& handle, size_t m, size_t n,
                  thrust::raw_pointer_cast(C), cuda_data_type, ldc,
                  cublas_compute_type, CUBLAS_GEMM_DEFAULT);
     if (status != CUBLAS_STATUS_SUCCESS) {
-        auto error_msg = fmt::format("cublasGemmEx failed: {}", status);
+        // 将枚举类型转换为字符串以便打印
+        const char* compute_type_str = "UNKNOWN";
+        const char* data_type_str = "UNKNOWN";
+        const char* op_a_str = transA ? "T" : "N";
+        const char* op_b_str = transB ? "T" : "N";
+        
+        if (cublas_compute_type == CUBLAS_COMPUTE_64F) {
+            compute_type_str = "CUBLAS_COMPUTE_64F";
+        } else if (cublas_compute_type == CUBLAS_COMPUTE_32F) {
+            compute_type_str = "CUBLAS_COMPUTE_32F";
+        }
+        
+        if (cuda_data_type == CUDA_R_64F) {
+            data_type_str = "CUDA_R_64F";
+        } else if (cuda_data_type == CUDA_R_32F) {
+            data_type_str = "CUDA_R_32F";
+        }
+        
+        auto error_msg = fmt::format(
+            "cublasGemmEx failed: {}\n"
+            "Parameters:\n"
+            "  handle: {}\n"
+            "  transA: {} (op={})\n"
+            "  transB: {} (op={})\n"
+            "  m: {}\n"
+            "  n: {}\n"
+            "  k: {}\n"
+            "  alpha: {}\n"
+            "  A: {}\n"
+            "  lda: {}\n"
+            "  B: {}\n"
+            "  ldb: {}\n"
+            "  beta: {}\n"
+            "  C: {}\n"
+            "  ldc: {}\n"
+            "  compute_type: {} ({})\n"
+            "  data_type: {} ({})\n"
+            "  algo: CUBLAS_GEMM_DEFAULT",
+            status,
+            fmt::ptr(&handle),
+            op_a_str, static_cast<int>(cublas_op_a),
+            op_b_str, static_cast<int>(cublas_op_b),
+            m, n, k, alpha,
+            fmt::ptr(thrust::raw_pointer_cast(A)), lda,
+            fmt::ptr(thrust::raw_pointer_cast(B)), ldb, beta,
+            fmt::ptr(thrust::raw_pointer_cast(C)), ldc,
+            compute_type_str, static_cast<int>(cublas_compute_type),
+            data_type_str, static_cast<int>(cuda_data_type)
+        );
         throw std::runtime_error(error_msg);
     }
 }
